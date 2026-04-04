@@ -43,6 +43,8 @@ pub struct App {
     pub pending_tool_calls: Vec<ToolCall>,
     pub assembling_tool_calls: HashMap<u32, ToolCall>,
     pub tool_output_buffer: String,
+    pub thinking_buffer: String,
+    pub in_thinking: bool,
     #[allow(dead_code)]
     project_dir: PathBuf,
 }
@@ -51,6 +53,7 @@ pub struct App {
 pub enum ChatEntry {
     User(String),
     Assistant(String),
+    Thinking(String),
     ToolCall { name: String, command: String, status: String },
     ToolOutput(String),
     System(String),
@@ -137,6 +140,8 @@ impl App {
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
             tool_output_buffer: String::new(),
+            thinking_buffer: String::new(),
+            in_thinking: false,
             project_dir,
         })
     }
@@ -340,9 +345,52 @@ impl App {
     }
 
     fn finalize_response(&mut self) {
+        // Reset thinking state in case stream ended mid-think
+        self.in_thinking = false;
+        self.thinking_buffer.clear();
+
         if !self.streaming_buffer.is_empty() {
             let text = std::mem::take(&mut self.streaming_buffer);
-            self.messages.push(ChatEntry::Assistant(text.clone()));
+
+            // Parse think tags and split into Thinking + Assistant entries
+            let mut remaining = text.as_str();
+            let mut assistant_content = String::new();
+
+            while !remaining.is_empty() {
+                if let Some(think_start) = remaining.find("<think>") {
+                    // Content before <think> is assistant text
+                    let before = &remaining[..think_start];
+                    if !before.trim().is_empty() {
+                        assistant_content.push_str(before);
+                    }
+
+                    remaining = &remaining[think_start + "<think>".len()..];
+
+                    if let Some(think_end) = remaining.find("</think>") {
+                        let thinking = &remaining[..think_end];
+                        if !thinking.trim().is_empty() {
+                            self.messages.push(ChatEntry::Thinking(thinking.trim().to_string()));
+                        }
+                        remaining = &remaining[think_end + "</think>".len()..];
+                    } else {
+                        // Unclosed think tag — treat rest as thinking
+                        if !remaining.trim().is_empty() {
+                            self.messages.push(ChatEntry::Thinking(remaining.trim().to_string()));
+                        }
+                        remaining = "";
+                    }
+                } else {
+                    assistant_content.push_str(remaining);
+                    remaining = "";
+                }
+            }
+
+            if !assistant_content.trim().is_empty() {
+                self.messages.push(ChatEntry::Assistant(assistant_content.trim().to_string()));
+            }
+
+            // Preserve the full text including think tags in conversation history
+            // so the model retains its reasoning context
             self.conversation.push(Message {
                 role: "assistant".into(),
                 content: Some(text),

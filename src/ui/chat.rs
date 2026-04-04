@@ -58,6 +58,15 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 )));
                 lines.push(Line::raw(""));
             }
+            ChatEntry::Thinking(text) => {
+                for think_line in text.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  \u{1f4ad} {}", think_line),
+                        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                    )));
+                }
+                lines.push(Line::raw(""));
+            }
             ChatEntry::System(text) => {
                 lines.push(Line::from(Span::styled(
                     text.as_str(),
@@ -78,14 +87,53 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         }
     }
 
+    // Streaming assistant response with think-tag parsing for live display
     if !app.streaming_buffer.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", app.active_model),
-                Style::default().fg(theme.assistant_text),
-            ),
-            Span::styled(app.streaming_buffer.as_str(), Style::default().fg(theme.fg)),
-        ]));
+        let mut remaining = app.streaming_buffer.as_str();
+        while !remaining.is_empty() {
+            if let Some(think_start) = remaining.find("<think>") {
+                let before = &remaining[..think_start];
+                if !before.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{}: ", app.active_model),
+                            Style::default().fg(theme.assistant_text),
+                        ),
+                        Span::styled(before, Style::default().fg(theme.fg)),
+                    ]));
+                }
+                remaining = &remaining[think_start + "<think>".len()..];
+                if let Some(think_end) = remaining.find("</think>") {
+                    let thinking = &remaining[..think_end];
+                    for think_line in thinking.lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  \u{1f4ad} {}", think_line),
+                            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    remaining = &remaining[think_end + "</think>".len()..];
+                } else {
+                    // Still in thinking (unclosed tag — thinking is streaming)
+                    for think_line in remaining.lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  \u{1f4ad} {}", think_line),
+                            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    remaining = "";
+                }
+            } else {
+                // No think tags — normal assistant content
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", app.active_model),
+                        Style::default().fg(theme.assistant_text),
+                    ),
+                    Span::styled(remaining, Style::default().fg(theme.fg)),
+                ]));
+                remaining = "";
+            }
+        }
     }
 
     let visible_height = area.height.saturating_sub(2) as usize;
