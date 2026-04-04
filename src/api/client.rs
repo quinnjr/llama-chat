@@ -111,5 +111,4 @@ pub enum StreamEvent {
     Token(String),
     ToolCallDelta(DeltaToolCall),
     Done,
-    Error(String),
 }

@@ -48,12 +48,17 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
+// Response and delta types are populated by serde deserialization;
+// not all fields are read by application code, but they must exist
+// for correct JSON mapping.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatResponse {
     pub id: String,
     pub choices: Vec<Choice>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct Choice {
     pub index: u32,
@@ -62,6 +67,7 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeltaMessage {
     pub role: Option<String>,
@@ -69,6 +75,7 @@ pub struct DeltaMessage {
     pub tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeltaToolCall {
     pub index: u32,

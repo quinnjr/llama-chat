@@ -195,6 +195,20 @@ async fn main() -> Result<()> {
                         "MCP '{server_name}' failed: {error}"
                     )));
                 }
+                AppEvent::ModelsLoaded(models) => {
+                    if models.is_empty() {
+                        app.messages.push(app::ChatEntry::System(
+                            "No models available on this server.".into(),
+                        ));
+                    } else {
+                        let list: Vec<String> =
+                            models.iter().map(|m| format!("  {m}")).collect();
+                        app.messages.push(app::ChatEntry::System(format!(
+                            "Available models:\n{}",
+                            list.join("\n")
+                        )));
+                    }
+                }
                 AppEvent::Error(e) => {
                     app.messages.push(app::ChatEntry::System(format!("Error: {e}")));
                 }

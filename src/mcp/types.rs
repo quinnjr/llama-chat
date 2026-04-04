@@ -15,6 +15,7 @@ impl JsonRpcRequest {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcResponse {
     pub id: Option<u64>,
@@ -42,11 +43,16 @@ pub struct McpToolsResult {
     pub tools: Vec<McpToolInfo>,
 }
 
+// McpCallResult and McpContent are populated by serde deserialization
+// in the transport impls (serde_json::from_value); not all fields are
+// read by application code.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct McpCallResult {
     pub content: Vec<McpContent>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct McpContent {
     #[serde(rename = "type")]

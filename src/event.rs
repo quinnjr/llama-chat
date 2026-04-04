@@ -23,5 +23,6 @@ pub enum AppEvent {
         server_name: String,
         error: String,
     },
+    ModelsLoaded(Vec<String>),
     Error(String),
 }

@@ -6,7 +6,6 @@ pub mod http;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::api::types::{ToolDefinition, FunctionDefinition};
 use crate::config::mcp_config::McpServerEntry;
 use types::McpToolInfo;
 
@@ -18,6 +17,7 @@ pub trait McpTransport: Send + Sync {
 }
 
 pub struct McpServer {
+    #[allow(dead_code)]
     pub name: String,
     pub transport: Box<dyn McpTransport>,
     pub tools: Vec<McpToolInfo>,
@@ -45,17 +45,6 @@ impl McpServer {
         let tools = transport.list_tools().await?;
 
         Ok(Self { name, transport, tools })
-    }
-
-    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|t| ToolDefinition {
-            tool_type: "function".into(),
-            function: FunctionDefinition {
-                name: format!("mcp_{}_{}", self.name, t.name),
-                description: t.description.clone().unwrap_or_default(),
-                parameters: t.input_schema.clone(),
-            },
-        }).collect()
     }
 
     pub async fn call_tool(&mut self, tool_name: &str, arguments: serde_json::Value) -> Result<String> {

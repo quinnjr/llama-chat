@@ -184,8 +184,23 @@ impl App {
                     ));
                 } else {
                     self.messages.push(ChatEntry::System(
-                        format!("Current model: {}. Use /model <name> to switch.", self.active_model)
+                        format!("Current model: {}. Fetching available models...", self.active_model)
                     ));
+                    let tx = self.event_tx.clone();
+                    let server = self.api_client.server().clone();
+                    let client = ApiClient::new(server);
+                    tokio::spawn(async move {
+                        match client.list_models().await {
+                            Ok(models) => {
+                                let _ = tx.send(AppEvent::ModelsLoaded(models));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(
+                                    format!("Failed to list models: {e}"),
+                                ));
+                            }
+                        }
+                    });
                 }
             }
             "/server" => {
@@ -318,9 +333,6 @@ impl App {
             }
             StreamEvent::Done => {
                 self.finalize_response();
-            }
-            StreamEvent::Error(e) => {
-                self.messages.push(ChatEntry::System(format!("Error: {e}")));
             }
         }
     }

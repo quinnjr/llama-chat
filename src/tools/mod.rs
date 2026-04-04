@@ -39,10 +39,6 @@ impl ToolRegistry {
         self.tools.insert(tool.name().into(), tool);
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|t| t.as_ref())
-    }
-
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.to_definition()).collect()
     }
