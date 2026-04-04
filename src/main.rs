@@ -88,7 +88,27 @@ async fn main() -> Result<()> {
         if let Some(event) = event_rx.recv().await {
             match event {
                 AppEvent::Key(key) => {
-                    if app.pending_permission.is_some() {
+                    if app.pattern_input.is_some() {
+                        match key.code {
+                            KeyCode::Enter => {
+                                app.handle_pattern_submit();
+                            }
+                            KeyCode::Esc => {
+                                app.pattern_input = None;
+                            }
+                            KeyCode::Char(c) => {
+                                if let Some(ref mut buf) = app.pattern_input {
+                                    buf.push(c);
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if let Some(ref mut buf) = app.pattern_input {
+                                    buf.pop();
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if app.pending_permission.is_some() {
                         match key.code {
                             KeyCode::Char('a') | KeyCode::Char('A') => {
                                 app.handle_permission_response(true, false);
@@ -98,6 +118,9 @@ async fn main() -> Result<()> {
                             }
                             KeyCode::Char('s') | KeyCode::Char('S') => {
                                 app.handle_permission_response(true, true);
+                            }
+                            KeyCode::Char('p') | KeyCode::Char('P') => {
+                                app.pattern_input = Some(String::new());
                             }
                             _ => {}
                         }

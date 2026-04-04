@@ -27,6 +27,7 @@ pub struct App {
     pub active_server_name: String,
     pub tool_count: usize,
     pub pending_permission: Option<PendingPermission>,
+    pub pattern_input: Option<String>,
     pub should_quit: bool,
 
     pub config: AppConfig,
@@ -120,6 +121,7 @@ impl App {
             active_server_name: server_name,
             tool_count,
             pending_permission: None,
+            pattern_input: None,
             should_quit: false,
             config,
             theme,
@@ -494,6 +496,15 @@ impl App {
             tool_call_id: Some(tool_call_id),
         });
         self.process_next_tool_call();
+    }
+
+    pub fn handle_pattern_submit(&mut self) {
+        if let Some(pattern) = self.pattern_input.take() {
+            if !pattern.is_empty() {
+                let _ = self.permissions.add_pattern(&pattern);
+            }
+            self.handle_permission_response(true, false);
+        }
     }
 
     pub fn handle_permission_response(&mut self, allow: bool, save: bool) {

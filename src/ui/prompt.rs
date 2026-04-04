@@ -13,6 +13,24 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         None => return,
     };
 
+    if let Some(ref pattern_buf) = app.pattern_input {
+        let input_line = Line::from(vec![
+            Span::styled(
+                "Pattern: ",
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(pattern_buf.as_str(), Style::default().fg(theme.fg)),
+            Span::styled("\u{25CF}", Style::default().fg(theme.fg)),
+        ]);
+        let hint_line = Line::from(Span::styled(
+            "Enter to save, Esc to cancel. Use * as wildcard (e.g. 'git *', 'cargo *')",
+            Style::default().fg(theme.muted),
+        ));
+        let prompt = Paragraph::new(vec![input_line, hint_line]);
+        f.render_widget(prompt, area);
+        return;
+    }
+
     let tool_line = Line::from(vec![
         Span::styled(
             format!("⚙ {} ", perm.tool_name),
@@ -36,7 +54,12 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             "[S]",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("ave always", Style::default().fg(theme.fg)),
+        Span::styled("ave always  ", Style::default().fg(theme.fg)),
+        Span::styled(
+            "[P]",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("attern...", Style::default().fg(theme.fg)),
     ]);
 
     let prompt = Paragraph::new(vec![tool_line, options_line]);
