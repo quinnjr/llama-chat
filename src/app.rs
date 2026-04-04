@@ -283,9 +283,30 @@ impl App {
                     ));
                 }
             }
+            "/init" => {
+                let agents_path = self.project_dir.join("AGENTS.md");
+                if agents_path.exists() {
+                    self.messages.push(ChatEntry::System(
+                        "AGENTS.md already exists. Edit it directly to update.".into()
+                    ));
+                } else {
+                    // Ask the model to generate AGENTS.md by examining the project
+                    self.messages.push(ChatEntry::System(
+                        "Generating AGENTS.md for this project...".into()
+                    ));
+                    self.messages.push(ChatEntry::User("Examine this project's structure, languages, and conventions. Then create an AGENTS.md file in the project root that describes:\n\n1. What this project is and its purpose\n2. Key architecture decisions and patterns\n3. Coding conventions (naming, style, error handling)\n4. How to build, test, and run the project\n5. Important files and directories\n6. Any rules an AI agent should follow when working on this codebase\n\nUse the list_files and read_file tools to understand the project, then write_file to create AGENTS.md. Be specific to this project — no generic boilerplate.".into()));
+                    self.conversation.push(Message {
+                        role: "user".into(),
+                        content: Some("Examine this project's structure, languages, and conventions. Then create an AGENTS.md file in the project root that describes:\n\n1. What this project is and its purpose\n2. Key architecture decisions and patterns\n3. Coding conventions (naming, style, error handling)\n4. How to build, test, and run the project\n5. Important files and directories\n6. Any rules an AI agent should follow when working on this codebase\n\nUse the list_files and read_file tools to understand the project, then write_file to create AGENTS.md. Be specific to this project — no generic boilerplate.".into()),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                    self.start_streaming();
+                }
+            }
             "/help" => {
                 self.messages.push(ChatEntry::System(
-                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /clear         — clear chat\n  /exit          — quit".into()
+                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /exit          — quit".into()
                 ));
             }
             other => {
