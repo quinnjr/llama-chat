@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::mcp::McpTransport;
 use crate::mcp::types::*;
 
+#[cfg(not(tarpaulin_include))]
 pub struct StreamableHttpTransport {
     url: String,
     http: Client,
@@ -13,6 +14,7 @@ pub struct StreamableHttpTransport {
     next_id: AtomicU64,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl StreamableHttpTransport {
     pub fn new(url: &str) -> Self {
         Self { url: url.into(), http: Client::new(), session_id: None, next_id: AtomicU64::new(1) }
@@ -58,6 +60,7 @@ impl StreamableHttpTransport {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 #[async_trait]
 impl McpTransport for StreamableHttpTransport {
     async fn initialize(&mut self) -> Result<()> {

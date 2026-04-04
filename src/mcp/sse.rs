@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::mcp::McpTransport;
 use crate::mcp::types::*;
 
+#[cfg(not(tarpaulin_include))]
 pub struct SseTransport {
     url: String,
     messages_url: Option<String>,
@@ -14,6 +15,7 @@ pub struct SseTransport {
     next_id: AtomicU64,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl SseTransport {
     pub fn new(url: &str) -> Self {
         Self { url: url.into(), messages_url: None, http: Client::new(), next_id: AtomicU64::new(1) }
@@ -41,6 +43,7 @@ impl SseTransport {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 #[async_trait]
 impl McpTransport for SseTransport {
     async fn initialize(&mut self) -> Result<()> {

@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::app::{App, ChatEntry};
 use crate::config::theme::Theme;
 
+#[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 

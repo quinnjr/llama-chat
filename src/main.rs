@@ -25,6 +25,7 @@ use crate::config::settings::AppConfig;
 use crate::config::mcp_config::McpConfig;
 use crate::event::AppEvent;
 
+#[cfg(not(tarpaulin_include))]
 #[tokio::main]
 async fn main() -> Result<()> {
     let yolo = std::env::args().any(|a| a == "--yolo");

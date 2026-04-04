@@ -24,6 +24,7 @@ pub struct McpServer {
 }
 
 impl McpServer {
+    #[cfg(not(tarpaulin_include))]
     pub async fn connect(name: String, entry: &McpServerEntry) -> Result<Self> {
         let mut transport: Box<dyn McpTransport> = match entry.detected_transport() {
             "stdio" => {
@@ -47,6 +48,7 @@ impl McpServer {
         Ok(Self { name, transport, tools })
     }
 
+    #[cfg(not(tarpaulin_include))]
     pub async fn call_tool(&mut self, tool_name: &str, arguments: serde_json::Value) -> Result<String> {
         self.transport.call_tool(tool_name, arguments).await
     }

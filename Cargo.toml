@@ -3,6 +3,9 @@ name = "llama-chat"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(tarpaulin_include)'] }
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 ratatui = "0.29"

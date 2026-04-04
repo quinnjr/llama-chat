@@ -111,4 +111,91 @@ mod tests {
         assert_eq!(theme.accent, Color::Rgb(255, 0, 0));
         assert_eq!(theme.tool_ok, Color::Rgb(52, 211, 153));
     }
+
+    #[test]
+    fn dark_theme_expected_colors() {
+        let theme = Theme::dark();
+        assert_eq!(theme.accent, Color::Rgb(129, 140, 248));
+        assert_eq!(theme.bg, Color::Rgb(17, 24, 39));
+        assert_eq!(theme.fg, Color::Rgb(229, 231, 235));
+        assert_eq!(theme.tool_ok, Color::Rgb(52, 211, 153));
+        assert_eq!(theme.tool_denied, Color::Rgb(248, 113, 113));
+    }
+
+    #[test]
+    fn light_theme_expected_colors() {
+        let theme = Theme::light();
+        assert_eq!(theme.accent, Color::Rgb(79, 70, 229));
+        assert_eq!(theme.bg, Color::Rgb(250, 250, 250));
+        assert_eq!(theme.fg, Color::Rgb(31, 41, 55));
+        assert_eq!(theme.tool_ok, Color::Rgb(5, 150, 105));
+        assert_eq!(theme.tool_denied, Color::Rgb(220, 38, 38));
+    }
+
+    #[test]
+    fn from_config_light_preset() {
+        let theme = Theme::from_config("light", &HashMap::new());
+        assert_eq!(theme.accent, Color::Rgb(79, 70, 229));
+        assert_eq!(theme.bg, Color::Rgb(250, 250, 250));
+    }
+
+    #[test]
+    fn from_config_unknown_preset_falls_back_to_dark() {
+        let theme = Theme::from_config("nonexistent", &HashMap::new());
+        assert_eq!(theme.accent, Color::Rgb(129, 140, 248));
+    }
+
+    #[test]
+    fn unknown_color_key_in_overrides_is_ignored() {
+        let mut overrides = HashMap::new();
+        overrides.insert("nonexistent_key".into(), "#ff0000".into());
+        let theme = Theme::from_config("dark", &overrides);
+        // Should be unchanged from dark defaults
+        assert_eq!(theme.accent, Color::Rgb(129, 140, 248));
+    }
+
+    #[test]
+    fn invalid_hex_in_overrides_is_ignored() {
+        let mut overrides = HashMap::new();
+        overrides.insert("accent".into(), "not-hex".into());
+        let theme = Theme::from_config("dark", &overrides);
+        assert_eq!(theme.accent, Color::Rgb(129, 140, 248));
+    }
+
+    #[test]
+    fn all_color_overrides() {
+        let mut overrides = HashMap::new();
+        overrides.insert("user_text".into(), "#aabbcc".into());
+        overrides.insert("assistant_text".into(), "#112233".into());
+        overrides.insert("tool_name".into(), "#445566".into());
+        overrides.insert("tool_ok".into(), "#778899".into());
+        overrides.insert("tool_denied".into(), "#aabb00".into());
+        overrides.insert("code_bg".into(), "#001122".into());
+        overrides.insert("border".into(), "#334455".into());
+        overrides.insert("muted".into(), "#667788".into());
+        overrides.insert("bg".into(), "#000000".into());
+        overrides.insert("fg".into(), "#ffffff".into());
+        let theme = Theme::from_config("dark", &overrides);
+        assert_eq!(theme.user_text, Color::Rgb(0xaa, 0xbb, 0xcc));
+        assert_eq!(theme.assistant_text, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(theme.tool_name, Color::Rgb(0x44, 0x55, 0x66));
+        assert_eq!(theme.tool_ok, Color::Rgb(0x77, 0x88, 0x99));
+        assert_eq!(theme.tool_denied, Color::Rgb(0xaa, 0xbb, 0x00));
+        assert_eq!(theme.code_bg, Color::Rgb(0x00, 0x11, 0x22));
+        assert_eq!(theme.border, Color::Rgb(0x33, 0x44, 0x55));
+        assert_eq!(theme.muted, Color::Rgb(0x66, 0x77, 0x88));
+        assert_eq!(theme.bg, Color::Rgb(0, 0, 0));
+        assert_eq!(theme.fg, Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn parse_hex_without_hash() {
+        assert_eq!(parse_hex("abcdef"), Some(Color::Rgb(0xab, 0xcd, 0xef)));
+    }
+
+    #[test]
+    fn parse_hex_wrong_length() {
+        assert_eq!(parse_hex("#abc"), None);
+        assert_eq!(parse_hex("#abcdefab"), None);
+    }
 }

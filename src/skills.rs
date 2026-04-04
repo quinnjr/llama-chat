@@ -121,4 +121,88 @@ mod tests {
 
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[test]
+    fn load_skills_from_empty_dir() {
+        let dir = std::env::temp_dir().join("llama-chat-test-skills-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let skills = load_skills_from_dir(&dir).unwrap();
+        assert!(skills.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_skills_from_nonexistent_dir() {
+        let dir = std::path::Path::new("/tmp/llama-chat-test-skills-nonexistent-xyz");
+        let skills = load_skills_from_dir(dir).unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn skill_without_name_uses_filename() {
+        let dir = std::env::temp_dir().join("llama-chat-test-skills-noname");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("myskill.md"), "---\ndescription: testing\n---\nSkill content here.").unwrap();
+
+        let skills = load_skills_from_dir(&dir).unwrap();
+        assert!(skills.contains_key("myskill"));
+        assert_eq!(skills["myskill"].description, "testing");
+        assert_eq!(skills["myskill"].content, "Skill content here.");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn skill_file_without_frontmatter() {
+        let dir = std::env::temp_dir().join("llama-chat-test-skills-nofm");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("bare.md"), "Just plain markdown content.").unwrap();
+
+        let skills = load_skills_from_dir(&dir).unwrap();
+        assert!(skills.contains_key("bare"));
+        assert_eq!(skills["bare"].content, "Just plain markdown content.");
+        assert!(skills["bare"].description.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn non_md_files_are_skipped() {
+        let dir = std::env::temp_dir().join("llama-chat-test-skills-nonmd");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("skill.md"), "---\nname: good\n---\nGood skill.").unwrap();
+        std::fs::write(dir.join("notes.txt"), "Some notes.").unwrap();
+        std::fs::write(dir.join("data.json"), "{}").unwrap();
+
+        let skills = load_skills_from_dir(&dir).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert!(skills.contains_key("good"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn extract_field_with_quotes() {
+        let fm = "name: \"quoted-name\"\ndescription: 'single-quoted'";
+        assert_eq!(extract_field(fm, "name"), Some("quoted-name".into()));
+        assert_eq!(extract_field(fm, "description"), Some("single-quoted".into()));
+    }
+
+    #[test]
+    fn split_frontmatter_unclosed_delimiters() {
+        let text = "---\nname: test\nContent without closing delimiter.";
+        let (fm, content) = split_frontmatter(text).unwrap();
+        // Unclosed --- means no valid frontmatter
+        assert!(fm.is_empty());
+        assert!(content.starts_with("---"));
+    }
 }

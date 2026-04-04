@@ -132,4 +132,83 @@ mod tests {
         assert!(mgr.is_allowed("cargo build"));
         assert!(!mgr.is_allowed("rm -rf /"));
     }
+
+    #[test]
+    fn load_from_nonexistent_dir() {
+        let dir = PathBuf::from("/tmp/llama-chat-test-perms-nonexistent-xyz");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mgr = PermissionManager::load(&dir);
+        assert!(!mgr.is_allowed("anything"));
+        assert!(mgr.config.allow.is_empty());
+    }
+
+    #[test]
+    fn add_exact_save_reload() {
+        let dir = std::env::temp_dir().join("llama-chat-test-perms-save");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut mgr = PermissionManager::load(&dir);
+        assert!(!mgr.is_allowed("git status"));
+
+        mgr.add_exact("git status").unwrap();
+        assert!(mgr.is_allowed("git status"));
+
+        // Reload from disk and verify persistence
+        let mgr2 = PermissionManager::load(&dir);
+        assert!(mgr2.is_allowed("git status"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn add_pattern_and_match() {
+        let dir = std::env::temp_dir().join("llama-chat-test-perms-pattern");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut mgr = PermissionManager::load(&dir);
+        mgr.add_pattern("cargo *").unwrap();
+
+        assert!(mgr.is_allowed("cargo build"));
+        assert!(mgr.is_allowed("cargo test"));
+        assert!(!mgr.is_allowed("git push"));
+
+        // Reload and verify
+        let mgr2 = PermissionManager::load(&dir);
+        assert!(mgr2.is_allowed("cargo build"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn empty_allow_list_denies_all() {
+        let mgr = PermissionManager {
+            config: PermissionsConfig::default(),
+            path: PathBuf::from("/tmp/test.json"),
+        };
+        assert!(!mgr.is_allowed("ls"));
+        assert!(!mgr.is_allowed("echo hi"));
+    }
+
+    #[test]
+    fn multiple_wildcards() {
+        // Pattern: a*b*c requires "a" prefix, "b" in middle, "c" suffix
+        assert!(glob_match("a*b*c", "axbxc"));
+        assert!(glob_match("a*b*c", "abbbc"));
+        assert!(!glob_match("a*b*c", "axbxd")); // ends with d, not c
+        assert!(!glob_match("a*b*c", "xbxc")); // doesn't start with a
+    }
+
+    #[test]
+    fn middle_part_not_found() {
+        // Pattern: a*xyz*c — "xyz" not found in text
+        assert!(!glob_match("a*xyz*c", "abc"));
+    }
+
+    #[test]
+    fn double_wildcard() {
+        assert!(glob_match("**", "anything"));
+        assert!(glob_match("a**b", "aXb"));
+    }
 }

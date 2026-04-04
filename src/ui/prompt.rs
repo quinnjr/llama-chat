@@ -7,6 +7,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::App;
 use crate::config::theme::Theme;
 
+#[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let perm = match &app.pending_permission {
         Some(p) => p,

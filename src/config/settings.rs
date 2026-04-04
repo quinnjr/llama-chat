@@ -132,4 +132,55 @@ accent = "#818cf8"
         assert!(config.servers.is_empty());
         assert_eq!(config.defaults.server, "local");
     }
+
+    #[test]
+    fn load_nonexistent_path_returns_default() {
+        let path = std::path::Path::new("/tmp/llama-chat-test-config-nonexistent.toml");
+        let config = AppConfig::load(path).unwrap();
+        assert!(config.servers.contains_key("local"));
+        assert_eq!(config.defaults.model, "llama3:8b");
+    }
+
+    #[test]
+    fn load_valid_file() {
+        let dir = std::env::temp_dir().join("llama-chat-test-settings-load");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, r#"
+[servers.myserver]
+name = "My Server"
+url = "http://example.com:8080/v1"
+
+[defaults]
+server = "myserver"
+model = "codellama:7b"
+
+[theme]
+preset = "light"
+"#).unwrap();
+
+        let config = AppConfig::load(&path).unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers["myserver"].name, "My Server");
+        assert_eq!(config.defaults.server, "myserver");
+        assert_eq!(config.defaults.model, "codellama:7b");
+        assert_eq!(config.theme.preset, "light");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn default_config_theme_is_dark() {
+        let config = AppConfig::default();
+        assert_eq!(config.theme.preset, "dark");
+        assert!(config.theme.colors.is_empty());
+    }
+
+    #[test]
+    fn server_config_api_key_is_optional() {
+        let config = AppConfig::default();
+        let local = &config.servers["local"];
+        assert!(local.api_key.is_none());
+        assert_eq!(local.url, "http://localhost:11434/v1");
+    }
 }

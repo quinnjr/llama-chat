@@ -139,3 +139,238 @@ impl Tool for ListFilesTool {
         Ok(entries.join("\n"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::Tool;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("llama-chat-fs-test-{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // --- ReadFileTool ---
+
+    #[test]
+    fn read_file_tool_metadata() {
+        let tool = ReadFileTool;
+        assert_eq!(tool.name(), "read_file");
+        assert!(!tool.description().is_empty());
+        let schema = tool.parameters_schema();
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[tokio::test]
+    async fn read_file_existing() {
+        let dir = temp_dir("read-existing");
+        let file = dir.join("hello.txt");
+        std::fs::write(&file, "hello world").unwrap();
+
+        let tool = ReadFileTool;
+        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, file.display())).await.unwrap();
+        assert_eq!(result, "hello world");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_file_nonexistent() {
+        let tool = ReadFileTool;
+        let result = tool.execute(r#"{"path": "/tmp/llama-chat-fs-test-nonexistent-file-xyz"}"#).await;
+        assert!(result.is_err());
+    }
+
+    // --- WriteFileTool ---
+
+    #[test]
+    fn write_file_tool_metadata() {
+        let tool = WriteFileTool;
+        assert_eq!(tool.name(), "write_file");
+        assert!(!tool.description().is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_file_new() {
+        let dir = temp_dir("write-new");
+        let file = dir.join("output.txt");
+
+        let tool = WriteFileTool;
+        let result = tool.execute(&format!(
+            r#"{{"path": "{}", "content": "test content"}}"#,
+            file.display()
+        )).await.unwrap();
+
+        assert!(result.contains("12 bytes"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "test content");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn write_file_overwrite() {
+        let dir = temp_dir("write-overwrite");
+        let file = dir.join("existing.txt");
+        std::fs::write(&file, "old content").unwrap();
+
+        let tool = WriteFileTool;
+        tool.execute(&format!(
+            r#"{{"path": "{}", "content": "new content"}}"#,
+            file.display()
+        )).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new content");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn write_file_creates_parent_dirs() {
+        let dir = temp_dir("write-parent");
+        let file = dir.join("sub/dir/deep.txt");
+
+        let tool = WriteFileTool;
+        tool.execute(&format!(
+            r#"{{"path": "{}", "content": "deep"}}"#,
+            file.display()
+        )).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "deep");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // --- EditFileTool ---
+
+    #[test]
+    fn edit_file_tool_metadata() {
+        let tool = EditFileTool;
+        assert_eq!(tool.name(), "edit_file");
+        assert!(!tool.description().is_empty());
+    }
+
+    #[tokio::test]
+    async fn edit_file_successful() {
+        let dir = temp_dir("edit-success");
+        let file = dir.join("code.rs");
+        std::fs::write(&file, "fn main() {\n    println!(\"old\");\n}\n").unwrap();
+
+        let tool = EditFileTool;
+        let result = tool.execute(&format!(
+            r#"{{"path": "{}", "old_string": "println!(\"old\")", "new_string": "println!(\"new\")"}}"#,
+            file.display()
+        )).await.unwrap();
+
+        assert!(result.contains("Edited"));
+        let content = std::fs::read_to_string(&file).unwrap();
+        assert!(content.contains("println!(\"new\")"));
+        assert!(!content.contains("println!(\"old\")"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_file_old_string_not_found() {
+        let dir = temp_dir("edit-not-found");
+        let file = dir.join("test.txt");
+        std::fs::write(&file, "abc def").unwrap();
+
+        let tool = EditFileTool;
+        let result = tool.execute(&format!(
+            r#"{{"path": "{}", "old_string": "xyz", "new_string": "new"}}"#,
+            file.display()
+        )).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_file_multiple_matches() {
+        let dir = temp_dir("edit-multi");
+        let file = dir.join("test.txt");
+        std::fs::write(&file, "aaa bbb aaa").unwrap();
+
+        let tool = EditFileTool;
+        let result = tool.execute(&format!(
+            r#"{{"path": "{}", "old_string": "aaa", "new_string": "ccc"}}"#,
+            file.display()
+        )).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("2 times"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn edit_file_nonexistent() {
+        let tool = EditFileTool;
+        let result = tool.execute(
+            r#"{"path": "/tmp/llama-chat-fs-test-nonexistent-edit.txt", "old_string": "a", "new_string": "b"}"#
+        ).await;
+        assert!(result.is_err());
+    }
+
+    // --- ListFilesTool ---
+
+    #[test]
+    fn list_files_tool_metadata() {
+        let tool = ListFilesTool;
+        assert_eq!(tool.name(), "list_files");
+        assert!(!tool.description().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_files_directory() {
+        let dir = temp_dir("list-dir");
+        std::fs::write(dir.join("alpha.txt"), "").unwrap();
+        std::fs::write(dir.join("beta.txt"), "").unwrap();
+        std::fs::write(dir.join("gamma.rs"), "").unwrap();
+
+        let tool = ListFilesTool;
+        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, dir.display())).await.unwrap();
+
+        assert!(result.contains("alpha.txt"));
+        assert!(result.contains("beta.txt"));
+        assert!(result.contains("gamma.rs"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_files_with_pattern() {
+        let dir = temp_dir("list-pattern");
+        std::fs::write(dir.join("foo.rs"), "").unwrap();
+        std::fs::write(dir.join("bar.rs"), "").unwrap();
+        std::fs::write(dir.join("baz.txt"), "").unwrap();
+
+        let tool = ListFilesTool;
+        let result = tool.execute(&format!(
+            r#"{{"path": "{}", "pattern": "*.rs"}}"#,
+            dir.display()
+        )).await.unwrap();
+
+        assert!(result.contains("foo.rs"));
+        assert!(result.contains("bar.rs"));
+        assert!(!result.contains("baz.txt"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn list_files_empty_directory() {
+        let dir = temp_dir("list-empty");
+
+        let tool = ListFilesTool;
+        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, dir.display())).await.unwrap();
+        assert!(result.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

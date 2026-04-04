@@ -7,6 +7,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::App;
 use crate::config::theme::Theme;
 
+#[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let prompt_char = Span::styled("▸ ", Style::default().fg(theme.muted));
     let input_text = Span::styled(app.input_buffer.as_str(), Style::default().fg(theme.fg));

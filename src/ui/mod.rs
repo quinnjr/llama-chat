@@ -9,6 +9,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use crate::app::App;
 use crate::config::theme::Theme;
 
+#[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)

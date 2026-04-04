@@ -328,6 +328,7 @@ impl App {
         }
     }
 
+    #[cfg(not(tarpaulin_include))]
     fn start_streaming(&self) {
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
@@ -516,6 +517,7 @@ impl App {
         }
     }
 
+    #[cfg(not(tarpaulin_include))]
     fn execute_tool_call(&mut self, tc: ToolCall) {
         self.pending_tool_calls.remove(0);
 
@@ -897,6 +899,761 @@ fn extract_mdc_globs(frontmatter: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod app_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use crate::api::client::StreamEvent;
+
+    fn test_app() -> App {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let config = AppConfig::default();
+        let mcp_config = McpConfig::default();
+        App::new(config, mcp_config, tx).unwrap()
+    }
+
+    // --- submit_message ---
+
+    #[test]
+    fn submit_empty_input_does_nothing() {
+        let mut app = test_app();
+        app.input_buffer = "   ".into();
+        app.submit_message();
+        assert!(app.messages.is_empty());
+        // Buffer is NOT cleared when input is all whitespace because the
+        // early return happens after trimming but before clearing.
+        // The trim check returns early, leaving the original buffer intact.
+    }
+
+    #[test]
+    fn submit_truly_empty_input_does_nothing() {
+        let mut app = test_app();
+        app.input_buffer = "".into();
+        app.submit_message();
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn submit_slash_command_routes_to_handler() {
+        let mut app = test_app();
+        app.input_buffer = "/help".into();
+        app.submit_message();
+        assert!(app.input_buffer.is_empty());
+        // Should have a system message with help text
+        assert!(matches!(app.messages.last(), Some(ChatEntry::System(s)) if s.contains("Commands:")));
+    }
+
+    // --- handle_slash_command ---
+
+    #[test]
+    fn slash_help() {
+        let mut app = test_app();
+        app.handle_slash_command("/help");
+        match &app.messages[0] {
+            ChatEntry::System(s) => {
+                assert!(s.contains("/model"));
+                assert!(s.contains("/server"));
+                assert!(s.contains("/tools"));
+                assert!(s.contains("/exit"));
+                assert!(s.contains("/clear"));
+            }
+            _ => panic!("Expected System message"),
+        }
+    }
+
+    #[test]
+    fn slash_exit() {
+        let mut app = test_app();
+        app.handle_slash_command("/exit");
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn slash_quit() {
+        let mut app = test_app();
+        app.handle_slash_command("/quit");
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn slash_clear() {
+        let mut app = test_app();
+        // Add some messages and conversation entries
+        app.messages.push(ChatEntry::User("hello".into()));
+        app.messages.push(ChatEntry::Assistant("hi".into()));
+        app.conversation.push(Message {
+            role: "system".into(),
+            content: Some("system prompt".into()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        app.conversation.push(Message {
+            role: "user".into(),
+            content: Some("hello".into()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        app.handle_slash_command("/clear");
+
+        // Messages should have only the "Conversation cleared." system message
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("cleared")));
+
+        // Conversation should retain only system messages
+        assert!(app.conversation.iter().all(|m| m.role == "system"));
+    }
+
+    #[test]
+    fn slash_model_with_arg() {
+        let mut app = test_app();
+        app.handle_slash_command("/model codellama:13b");
+        assert_eq!(app.active_model, "codellama:13b");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("codellama:13b")));
+    }
+
+    #[tokio::test]
+    async fn slash_model_without_arg() {
+        let mut app = test_app();
+        app.handle_slash_command("/model");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Current model:")));
+    }
+
+    #[test]
+    fn slash_server_with_known_name() {
+        let mut app = test_app();
+        app.handle_slash_command("/server local");
+        assert_eq!(app.active_server_name, "Local Ollama");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Local Ollama")));
+    }
+
+    #[test]
+    fn slash_server_with_unknown_name() {
+        let mut app = test_app();
+        app.handle_slash_command("/server nonexistent");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Unknown server")));
+    }
+
+    #[test]
+    fn slash_server_without_arg() {
+        let mut app = test_app();
+        app.handle_slash_command("/server");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Servers:")));
+    }
+
+    #[test]
+    fn slash_tools() {
+        let mut app = test_app();
+        app.handle_slash_command("/tools");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5")));
+    }
+
+    #[test]
+    fn slash_tools_with_mcp() {
+        let mut app = test_app();
+        app.mcp_tool_defs.push(ToolDefinition {
+            tool_type: "function".into(),
+            function: FunctionDefinition {
+                name: "mcp_test".into(),
+                description: "test".into(),
+                parameters: serde_json::json!({}),
+            },
+        });
+        app.handle_slash_command("/tools");
+        match &app.messages[0] {
+            ChatEntry::System(s) => {
+                assert!(s.contains("Built-in tools:"));
+                assert!(s.contains("MCP tools: 1"));
+            }
+            _ => panic!("Expected System message"),
+        }
+    }
+
+    #[test]
+    fn slash_skills_empty() {
+        let mut app = test_app();
+        app.skills.clear();
+        app.handle_slash_command("/skills");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("No skills loaded")));
+    }
+
+    #[test]
+    fn slash_skills_with_entries() {
+        let mut app = test_app();
+        app.skills.insert("review".into(), crate::skills::Skill {
+            name: "review".into(),
+            description: "Review code".into(),
+            content: "Review content".into(),
+        });
+        app.handle_slash_command("/skills");
+        match &app.messages[0] {
+            ChatEntry::System(s) => {
+                assert!(s.contains("Skills:"));
+                assert!(s.contains("/review"));
+            }
+            _ => panic!("Expected System message"),
+        }
+    }
+
+    #[test]
+    fn slash_unknown_command() {
+        let mut app = test_app();
+        app.handle_slash_command("/foobar");
+        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Unknown command: /foobar")));
+    }
+
+    #[test]
+    fn slash_skill_activation() {
+        let mut app = test_app();
+        app.skills.insert("review".into(), crate::skills::Skill {
+            name: "review".into(),
+            description: "Review code".into(),
+            content: "Review the code carefully.".into(),
+        });
+        app.handle_slash_command("/review");
+
+        // Skill content should be added to conversation as system message
+        let last_conv = app.conversation.last().unwrap();
+        assert_eq!(last_conv.role, "system");
+        assert_eq!(last_conv.content.as_deref(), Some("Review the code carefully."));
+
+        // User should see activation message
+        assert!(matches!(&app.messages.last().unwrap(), ChatEntry::System(s) if s.contains("activated")));
+    }
+
+    // --- handle_stream_event ---
+
+    #[test]
+    fn stream_event_token_appends() {
+        let mut app = test_app();
+        app.handle_stream_event(StreamEvent::Token("Hello".into()));
+        assert_eq!(app.streaming_buffer, "Hello");
+        app.handle_stream_event(StreamEvent::Token(" World".into()));
+        assert_eq!(app.streaming_buffer, "Hello World");
+    }
+
+    #[test]
+    fn stream_event_tool_call_delta_assembles() {
+        let mut app = test_app();
+        let delta = DeltaToolCall {
+            index: 0,
+            id: Some("call_123".into()),
+            call_type: Some("function".into()),
+            function: Some(DeltaFunctionCall {
+                name: Some("shell".into()),
+                arguments: Some(r#"{"comm"#.into()),
+            }),
+        };
+        app.handle_stream_event(StreamEvent::ToolCallDelta(delta));
+
+        let delta2 = DeltaToolCall {
+            index: 0,
+            id: None,
+            call_type: None,
+            function: Some(DeltaFunctionCall {
+                name: None,
+                arguments: Some(r#"and":"ls"}"#.into()),
+            }),
+        };
+        app.handle_stream_event(StreamEvent::ToolCallDelta(delta2));
+
+        let assembled = &app.assembling_tool_calls[&0];
+        assert_eq!(assembled.id, "call_123");
+        assert_eq!(assembled.function.name, "shell");
+        assert_eq!(assembled.function.arguments, r#"{"command":"ls"}"#);
+    }
+
+    // --- finalize_response ---
+
+    #[test]
+    fn finalize_simple_text() {
+        let mut app = test_app();
+        app.streaming_buffer = "Hello there!".into();
+        app.finalize_response();
+
+        assert!(app.streaming_buffer.is_empty());
+        assert!(matches!(&app.messages[0], ChatEntry::Assistant(s) if s == "Hello there!"));
+        // Should be added to conversation
+        let last = app.conversation.last().unwrap();
+        assert_eq!(last.role, "assistant");
+    }
+
+    #[test]
+    fn finalize_with_think_tags() {
+        let mut app = test_app();
+        app.streaming_buffer = "<think>Let me reason about this.</think>Here is my answer.".into();
+        app.finalize_response();
+
+        // Should have a Thinking entry and an Assistant entry
+        let mut has_thinking = false;
+        let mut has_assistant = false;
+        for entry in &app.messages {
+            match entry {
+                ChatEntry::Thinking(s) => {
+                    assert_eq!(s, "Let me reason about this.");
+                    has_thinking = true;
+                }
+                ChatEntry::Assistant(s) => {
+                    assert_eq!(s, "Here is my answer.");
+                    has_assistant = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(has_thinking);
+        assert!(has_assistant);
+    }
+
+    #[test]
+    fn finalize_with_unclosed_think_tag() {
+        let mut app = test_app();
+        app.streaming_buffer = "<think>Still thinking...".into();
+        app.finalize_response();
+
+        assert!(matches!(&app.messages[0], ChatEntry::Thinking(s) if s == "Still thinking..."));
+    }
+
+    #[test]
+    fn finalize_empty_streaming_buffer() {
+        let mut app = test_app();
+        app.streaming_buffer.clear();
+        let msg_count = app.messages.len();
+        app.finalize_response();
+        // No messages should be added
+        assert_eq!(app.messages.len(), msg_count);
+    }
+
+    #[test]
+    fn finalize_only_whitespace_think_tag() {
+        let mut app = test_app();
+        app.streaming_buffer = "<think>   </think>Actual answer.".into();
+        app.finalize_response();
+
+        // Whitespace-only thinking should not produce a Thinking entry
+        for entry in &app.messages {
+            assert!(!matches!(entry, ChatEntry::Thinking(_)));
+        }
+        assert!(matches!(app.messages.last(), Some(ChatEntry::Assistant(s)) if s == "Actual answer."));
+    }
+
+    #[test]
+    fn finalize_text_before_and_after_think() {
+        let mut app = test_app();
+        app.streaming_buffer = "Prefix <think>reasoning</think> Suffix".into();
+        app.finalize_response();
+
+        let mut found_thinking = false;
+        let mut found_assistant = false;
+        for entry in &app.messages {
+            match entry {
+                ChatEntry::Thinking(s) if s == "reasoning" => found_thinking = true,
+                ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => found_assistant = true,
+                _ => {}
+            }
+        }
+        assert!(found_thinking);
+        assert!(found_assistant);
+    }
+
+    #[test]
+    fn finalize_resets_thinking_state() {
+        let mut app = test_app();
+        app.in_thinking = true;
+        app.thinking_buffer = "leftover".into();
+        app.streaming_buffer = "response".into();
+        app.finalize_response();
+
+        assert!(!app.in_thinking);
+        assert!(app.thinking_buffer.is_empty());
+    }
+
+    // --- handle_tool_result ---
+
+    #[tokio::test]
+    async fn handle_tool_result_success() {
+        let mut app = test_app();
+        app.handle_tool_result("call_1".into(), "output text".into(), true);
+
+        assert!(matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s == "output text"));
+        let conv_last = app.conversation.last().unwrap();
+        assert_eq!(conv_last.role, "tool");
+        assert_eq!(conv_last.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(conv_last.content.as_deref(), Some("output text"));
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_failure() {
+        let mut app = test_app();
+        app.handle_tool_result("call_2".into(), "some error".into(), false);
+
+        assert!(matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s.contains("Error:")));
+        let conv_last = app.conversation.last().unwrap();
+        assert!(conv_last.content.as_deref().unwrap().contains("Error:"));
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_with_buffered_output() {
+        let mut app = test_app();
+        app.tool_output_buffer = "line1\nline2\n".into();
+        app.handle_tool_result("call_3".into(), "(command completed)".into(), true);
+
+        // Buffered output should be used directly since result is the sentinel
+        assert!(matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s.contains("line1")));
+    }
+
+    #[tokio::test]
+    async fn handle_tool_result_buffer_plus_extra() {
+        let mut app = test_app();
+        app.tool_output_buffer = "buffered".into();
+        app.handle_tool_result("call_4".into(), "extra output".into(), true);
+
+        // Both buffered and extra should be combined
+        assert!(matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s.contains("buffered") && s.contains("extra output")));
+    }
+
+    // --- handle_permission_response ---
+
+    #[tokio::test]
+    async fn permission_response_deny() {
+        let mut app = test_app();
+        app.messages.push(ChatEntry::ToolCall {
+            name: "shell".into(),
+            command: "rm -rf /".into(),
+            status: "pending".into(),
+        });
+        app.pending_permission = Some(PendingPermission {
+            tool_name: "shell".into(),
+            command: "rm -rf /".into(),
+            tool_call_id: "call_deny".into(),
+            arguments: r#"{"command":"rm -rf /"}"#.into(),
+        });
+
+        app.handle_permission_response(false, false);
+
+        assert!(app.pending_permission.is_none());
+        // The last ToolCall entry should be "denied" (messages may have more
+        // entries appended by process_next_tool_call, so search backwards)
+        let denied = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "denied"));
+        assert!(denied);
+        // Should have added a permission denied tool message
+        let tool_msg = app.conversation.iter().find(|m| m.role == "tool").unwrap();
+        assert!(tool_msg.content.as_deref().unwrap().contains("Permission denied"));
+    }
+
+    #[test]
+    fn permission_response_no_pending() {
+        let mut app = test_app();
+        let msg_count = app.messages.len();
+        app.handle_permission_response(true, false);
+        // Should be a no-op
+        assert_eq!(app.messages.len(), msg_count);
+    }
+
+    // --- handle_pattern_submit ---
+
+    #[tokio::test]
+    async fn pattern_submit_empty_pattern() {
+        let mut app = test_app();
+        app.pattern_input = Some(String::new());
+        app.messages.push(ChatEntry::ToolCall {
+            name: "shell".into(),
+            command: "echo hi".into(),
+            status: "pending".into(),
+        });
+        // The tool call needs to be in pending_tool_calls because
+        // handle_permission_response(allow=true) calls execute_tool_call
+        // which removes from pending_tool_calls.
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_p".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command":"echo hi"}"#.into(),
+            },
+        });
+        app.pending_permission = Some(PendingPermission {
+            tool_name: "shell".into(),
+            command: "echo hi".into(),
+            tool_call_id: "call_p".into(),
+            arguments: r#"{"command":"echo hi"}"#.into(),
+        });
+
+        app.handle_pattern_submit();
+        assert!(app.pattern_input.is_none());
+    }
+
+    #[tokio::test]
+    async fn pattern_submit_with_pattern() {
+        let mut app = test_app();
+        app.pattern_input = Some("echo *".into());
+        app.messages.push(ChatEntry::ToolCall {
+            name: "shell".into(),
+            command: "echo hi".into(),
+            status: "pending".into(),
+        });
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_pp".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command":"echo hi"}"#.into(),
+            },
+        });
+        app.pending_permission = Some(PendingPermission {
+            tool_name: "shell".into(),
+            command: "echo hi".into(),
+            tool_call_id: "call_pp".into(),
+            arguments: r#"{"command":"echo hi"}"#.into(),
+        });
+
+        app.handle_pattern_submit();
+        assert!(app.pattern_input.is_none());
+        // The pattern should have been saved to permissions
+        assert!(app.permissions.is_allowed("echo hello"));
+    }
+
+    // --- init command ---
+
+    #[tokio::test]
+    async fn slash_init_agents_already_exists() {
+        let mut app = test_app();
+        // /init either reports "already exists" or starts generating.
+        // In the test working dir (project root), AGENTS.md may or may not
+        // exist. Either outcome is valid.
+        app.handle_slash_command("/init");
+        let has_relevant_msg = app.messages.iter().any(|m| {
+            matches!(m,
+                ChatEntry::System(s) if s.contains("AGENTS.md already exists") || s.contains("Generating"))
+            || matches!(m, ChatEntry::User(s) if s.contains("Examine this project"))
+        });
+        assert!(has_relevant_msg);
+    }
+
+    // --- process_next_tool_call ---
+
+    #[tokio::test]
+    async fn process_next_tool_call_session_allowed() {
+        let mut app = test_app();
+        // read_file is in session_allow by default
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_read".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: r#"{"path": "/nonexistent"}"#.into(),
+            },
+        });
+
+        app.process_next_tool_call();
+
+        // Should have been allowed (status "allowed") because read_file is in session_allow
+        let has_allowed = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
+        assert!(has_allowed);
+    }
+
+    #[test]
+    fn process_next_tool_call_shell_needs_permission() {
+        let mut app = test_app();
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_shell".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command": "rm -rf /"}"#.into(),
+            },
+        });
+
+        app.process_next_tool_call();
+
+        // Should be pending permission
+        assert!(app.pending_permission.is_some());
+        let has_pending = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "pending"));
+        assert!(has_pending);
+    }
+
+    #[tokio::test]
+    async fn process_next_tool_call_yolo_bypasses_permission() {
+        let mut app = test_app();
+        app.yolo = true;
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_yolo".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command": "echo yolo"}"#.into(),
+            },
+        });
+
+        app.process_next_tool_call();
+
+        // Should be auto-allowed
+        let has_allowed = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
+        assert!(has_allowed);
+        assert!(app.pending_permission.is_none());
+    }
+
+    // --- finalize_response with tool calls ---
+
+    #[tokio::test]
+    async fn finalize_response_with_assembled_tool_calls() {
+        let mut app = test_app();
+        // Simulate assembled tool calls (as if streamed in via ToolCallDelta)
+        app.assembling_tool_calls.insert(0, ToolCall {
+            id: "call_assembled".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: r#"{"path": "/tmp/test"}"#.into(),
+            },
+        });
+
+        app.finalize_response();
+
+        // Should have pushed the assistant message with tool_calls
+        let assistant_msg = app.conversation.iter().find(|m| {
+            m.role == "assistant" && m.tool_calls.is_some()
+        });
+        assert!(assistant_msg.is_some());
+        let tool_calls = assistant_msg.unwrap().tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "read_file");
+    }
+
+    // --- StreamEvent::Done triggers finalize ---
+
+    #[tokio::test]
+    async fn stream_event_done_triggers_finalize() {
+        let mut app = test_app();
+        app.streaming_buffer = "final answer".into();
+        app.handle_stream_event(StreamEvent::Done);
+
+        // finalize_response should have been called
+        assert!(app.streaming_buffer.is_empty());
+        assert!(matches!(&app.messages[0], ChatEntry::Assistant(s) if s == "final answer"));
+    }
+
+    // --- handle_permission_response with save ---
+
+    #[tokio::test]
+    async fn permission_response_allow_with_save() {
+        let mut app = test_app();
+        app.messages.push(ChatEntry::ToolCall {
+            name: "shell".into(),
+            command: "git status".into(),
+            status: "pending".into(),
+        });
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_save".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command":"git status"}"#.into(),
+            },
+        });
+        app.pending_permission = Some(PendingPermission {
+            tool_name: "shell".into(),
+            command: "git status".into(),
+            tool_call_id: "call_save".into(),
+            arguments: r#"{"command":"git status"}"#.into(),
+        });
+
+        app.handle_permission_response(true, true);
+
+        // The command should now be permanently allowed
+        assert!(app.permissions.is_allowed("git status"));
+    }
+
+    // --- permission_response deny with pending_tool_calls ---
+
+    #[tokio::test]
+    async fn permission_response_deny_removes_from_pending() {
+        let mut app = test_app();
+        app.messages.push(ChatEntry::ToolCall {
+            name: "shell".into(),
+            command: "rm -rf".into(),
+            status: "pending".into(),
+        });
+        app.pending_tool_calls.push(ToolCall {
+            id: "call_deny2".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command":"rm -rf"}"#.into(),
+            },
+        });
+        app.pending_permission = Some(PendingPermission {
+            tool_name: "shell".into(),
+            command: "rm -rf".into(),
+            tool_call_id: "call_deny2".into(),
+            arguments: r#"{"command":"rm -rf"}"#.into(),
+        });
+
+        app.handle_permission_response(false, false);
+
+        // pending_tool_calls should be empty now (the one entry was removed)
+        assert!(app.pending_tool_calls.is_empty());
+    }
+
+    // --- submit_message regular (non-slash) ---
+
+    #[tokio::test]
+    async fn submit_regular_message() {
+        let mut app = test_app();
+        app.input_buffer = "Hello, how are you?".into();
+        app.submit_message();
+
+        assert!(app.input_buffer.is_empty());
+        assert!(matches!(&app.messages[0], ChatEntry::User(s) if s == "Hello, how are you?"));
+        let last_conv = app.conversation.last().unwrap();
+        assert_eq!(last_conv.role, "user");
+        assert_eq!(last_conv.content.as_deref(), Some("Hello, how are you?"));
+    }
+
+    // --- App::new with missing server config ---
+
+    #[test]
+    fn app_new_with_missing_server_config() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut config = AppConfig::default();
+        // Remove the "local" server so the fallback kicks in
+        config.servers.clear();
+        config.defaults.server = "nonexistent".into();
+        let mcp_config = McpConfig::default();
+        let app = App::new(config, mcp_config, tx).unwrap();
+
+        // Should fall back to default "Local Ollama"
+        assert_eq!(app.active_server_name, "Local Ollama");
+    }
+
+    // --- App::new ---
+
+    #[test]
+    fn app_new_default_state() {
+        let app = test_app();
+        assert!(app.messages.is_empty());
+        assert!(app.input_buffer.is_empty());
+        assert!(app.streaming_buffer.is_empty());
+        assert_eq!(app.active_model, "llama3:8b");
+        assert_eq!(app.active_server_name, "Local Ollama");
+        assert_eq!(app.tool_count, 5);
+        assert!(!app.should_quit);
+        assert!(!app.yolo);
+        assert!(app.pending_permission.is_none());
+        assert!(app.pattern_input.is_none());
+        assert!(app.pending_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn app_new_session_allow_defaults() {
+        let app = test_app();
+        assert!(app.session_allow.contains("read_file"));
+        assert!(app.session_allow.contains("write_file"));
+        assert!(app.session_allow.contains("edit_file"));
+        assert!(app.session_allow.contains("list_files"));
+        assert!(!app.session_allow.contains("shell"));
+    }
+}
+
+#[cfg(test)]
 mod mdc_tests {
     use super::*;
 
@@ -927,5 +1684,173 @@ mod mdc_tests {
         let fm = "description: manual rule\nalwaysApply: false";
         let globs = extract_mdc_globs(fm);
         assert!(globs.is_empty());
+    }
+
+    #[test]
+    fn parse_mdc_no_frontmatter() {
+        let text = "Just content, no frontmatter.";
+        let (fm, content) = parse_mdc_frontmatter(text).unwrap();
+        assert!(fm.is_empty());
+        assert_eq!(content, text);
+    }
+
+    #[test]
+    fn parse_mdc_unclosed_frontmatter() {
+        let text = "---\nalwaysApply: true\nContent without closing.";
+        let result = parse_mdc_frontmatter(text);
+        // Unclosed frontmatter returns None
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_mdc_globs_comment_in_list() {
+        let fm = "globs:\n  - src/**/*.rs\n  # comment\n  - tests/*.rs";
+        let globs = extract_mdc_globs(fm);
+        assert_eq!(globs, vec!["src/**/*.rs", "tests/*.rs"]);
+    }
+
+    #[test]
+    fn extract_mdc_globs_ends_on_non_list_line() {
+        let fm = "globs:\n  - *.rs\ndescription: some rule";
+        let globs = extract_mdc_globs(fm);
+        assert_eq!(globs, vec!["*.rs"]);
+    }
+
+    #[test]
+    fn extract_mdc_globs_single_inline_glob() {
+        let fm = "globs: *.py\nalwaysApply: false";
+        let globs = extract_mdc_globs(fm);
+        assert_eq!(globs, vec!["*.py"]);
+    }
+
+    #[test]
+    fn extract_mdc_globs_empty_inline() {
+        let fm = "globs:\nalwaysApply: false";
+        let globs = extract_mdc_globs(fm);
+        // Empty globs line, no list follows (next line is a different key)
+        assert!(globs.is_empty());
+    }
+
+    #[test]
+    fn load_mdc_rules_nonexistent_dir() {
+        let dir = std::path::PathBuf::from("/tmp/llama-chat-test-mdc-nonexistent-xyz");
+        let rules = load_mdc_rules(&dir);
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn load_mdc_rules_always_apply() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-always");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        std::fs::write(
+            rules_dir.join("style.mdc"),
+            "---\nalwaysApply: true\n---\n\nUse consistent formatting."
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("Use consistent formatting."));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_mdc_rules_empty_content_skipped() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-empty");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        std::fs::write(
+            rules_dir.join("empty.mdc"),
+            "---\nalwaysApply: true\n---\n   "
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert!(rules.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_mdc_rules_non_mdc_files_skipped() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-nonmdc");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        std::fs::write(rules_dir.join("readme.md"), "# Not an MDC file").unwrap();
+        std::fs::write(
+            rules_dir.join("actual.mdc"),
+            "---\nalwaysApply: true\n---\n\nReal rule."
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert_eq!(rules.len(), 1);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_mdc_rules_manual_trigger_skipped() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-manual");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        // No globs, not alwaysApply — this is manual-trigger only
+        std::fs::write(
+            rules_dir.join("manual.mdc"),
+            "---\ndescription: manual\nalwaysApply: false\n---\n\nManual rule content."
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert!(rules.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_mdc_rules_with_matching_glob() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-glob");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        // Create a file that matches the glob
+        std::fs::write(dir.join("test.rs"), "fn main() {}").unwrap();
+
+        std::fs::write(
+            rules_dir.join("rust.mdc"),
+            "---\nglobs: *.rs\nalwaysApply: false\n---\n\nRust style rules."
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("Rust style rules."));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_mdc_rules_with_non_matching_glob() {
+        let dir = std::env::temp_dir().join("llama-chat-test-mdc-noglob");
+        let rules_dir = dir.join(".cursor/rules");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&rules_dir).unwrap();
+
+        // No .py files in this temp dir
+        std::fs::write(
+            rules_dir.join("python.mdc"),
+            "---\nglobs: *.py\nalwaysApply: false\n---\n\nPython rules."
+        ).unwrap();
+
+        let rules = load_mdc_rules(&dir);
+        assert!(rules.is_empty());
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }

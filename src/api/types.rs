@@ -151,4 +151,89 @@ mod tests {
         assert_eq!(resp.data.len(), 2);
         assert_eq!(resp.data[0].id, "llama3:8b");
     }
+
+    #[test]
+    fn think_true_serializes() {
+        let req = ChatRequest {
+            model: "llama3:8b".into(),
+            messages: vec![],
+            stream: true,
+            tools: None,
+            think: true,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["think"], true);
+    }
+
+    #[test]
+    fn think_false_is_omitted() {
+        let req = ChatRequest {
+            model: "llama3:8b".into(),
+            messages: vec![],
+            stream: true,
+            tools: None,
+            think: false,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("think").is_none());
+    }
+
+    #[test]
+    fn message_optional_fields_omitted() {
+        let msg = Message {
+            role: "user".into(),
+            content: Some("hello".into()),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("tool_calls").is_none());
+        assert!(json.get("tool_call_id").is_none());
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"], "hello");
+    }
+
+    #[test]
+    fn message_with_tool_call_id() {
+        let msg = Message {
+            role: "tool".into(),
+            content: Some("result".into()),
+            tool_calls: None,
+            tool_call_id: Some("call_123".into()),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["tool_call_id"], "call_123");
+    }
+
+    #[test]
+    fn tool_definition_roundtrip() {
+        let def = ToolDefinition {
+            tool_type: "function".into(),
+            function: FunctionDefinition {
+                name: "test".into(),
+                description: "A test tool".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let parsed: ToolDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.function.name, "test");
+        assert_eq!(parsed.tool_type, "function");
+    }
+
+    #[test]
+    fn tool_call_serialization() {
+        let tc = ToolCall {
+            id: "call_abc".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "shell".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+            },
+        };
+        let json = serde_json::to_value(&tc).unwrap();
+        assert_eq!(json["id"], "call_abc");
+        assert_eq!(json["type"], "function");
+        assert_eq!(json["function"]["name"], "shell");
+    }
 }

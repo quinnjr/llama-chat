@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::mcp::McpTransport;
 use crate::mcp::types::*;
 
+#[cfg(not(tarpaulin_include))]
 pub struct StdioTransport {
     command: String,
     args: Vec<String>,
@@ -16,6 +17,7 @@ pub struct StdioTransport {
     next_id: AtomicU64,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl StdioTransport {
     pub fn new(command: &str, args: &[String]) -> Self {
         Self {
@@ -53,6 +55,7 @@ impl StdioTransport {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 #[async_trait]
 impl McpTransport for StdioTransport {
     async fn initialize(&mut self) -> Result<()> {
@@ -99,6 +102,7 @@ impl McpTransport for StdioTransport {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
 impl Drop for StdioTransport {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.child {

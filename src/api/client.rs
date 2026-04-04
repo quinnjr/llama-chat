@@ -28,6 +28,7 @@ impl ApiClient {
         self.server = server;
     }
 
+    #[cfg(not(tarpaulin_include))]
     pub async fn list_models(&self) -> Result<Vec<String>> {
         let url = format!("{}/models", self.server.url);
         let mut req = self.http.get(&url);
@@ -44,6 +45,7 @@ impl ApiClient {
         Ok(resp.data.into_iter().map(|m| m.id).collect())
     }
 
+    #[cfg(not(tarpaulin_include))]
     pub async fn chat_stream(
         &self,
         request: ChatRequest,
@@ -111,4 +113,43 @@ pub enum StreamEvent {
     Token(String),
     ToolCallDelta(DeltaToolCall),
     Done,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_client_new_and_server() {
+        let server = ServerConfig {
+            name: "Test".into(),
+            url: "http://localhost:8080/v1".into(),
+            api_key: None,
+        };
+        let client = ApiClient::new(server);
+        assert_eq!(client.server().name, "Test");
+        assert_eq!(client.server().url, "http://localhost:8080/v1");
+        assert!(client.server().api_key.is_none());
+    }
+
+    #[test]
+    fn api_client_set_server() {
+        let server1 = ServerConfig {
+            name: "Server1".into(),
+            url: "http://localhost:8080/v1".into(),
+            api_key: None,
+        };
+        let server2 = ServerConfig {
+            name: "Server2".into(),
+            url: "http://remote:9090/v1".into(),
+            api_key: Some("sk-secret".into()),
+        };
+        let mut client = ApiClient::new(server1);
+        assert_eq!(client.server().name, "Server1");
+
+        client.set_server(server2);
+        assert_eq!(client.server().name, "Server2");
+        assert_eq!(client.server().url, "http://remote:9090/v1");
+        assert_eq!(client.server().api_key.as_deref(), Some("sk-secret"));
+    }
 }
