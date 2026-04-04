@@ -131,6 +131,18 @@ impl App {
             }
         }
 
+        // Load Cursor MDC rules from .cursor/rules/*.mdc
+        let mdc_rules = load_mdc_rules(&project_dir);
+        if !mdc_rules.is_empty() {
+            let combined = mdc_rules.join("\n\n---\n\n");
+            conversation.push(Message {
+                role: "system".into(),
+                content: Some(combined),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
         Ok(Self {
             messages: Vec::new(),
             conversation,
@@ -726,5 +738,175 @@ impl App {
             });
             self.process_next_tool_call();
         }
+    }
+}
+
+/// Load Cursor MDC rule files from .cursor/rules/*.mdc.
+///
+/// Rules with `alwaysApply: true` are always included. Rules with globs
+/// are included only if the project contains files matching those globs.
+/// Rules with `alwaysApply: false` and no globs are skipped (they're
+/// manual-trigger only in Cursor).
+fn load_mdc_rules(project_dir: &std::path::Path) -> Vec<String> {
+    let rules_dir = project_dir.join(".cursor/rules");
+    if !rules_dir.exists() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+
+    let entries = match std::fs::read_dir(&rules_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("mdc") {
+            continue;
+        }
+
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let (frontmatter, content) = match parse_mdc_frontmatter(&raw) {
+            Some(pair) => pair,
+            None => continue,
+        };
+
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        let always_apply = frontmatter
+            .lines()
+            .any(|l| l.trim().starts_with("alwaysApply:") && l.contains("true"));
+
+        if always_apply {
+            results.push(content);
+            continue;
+        }
+
+        // Extract globs from frontmatter
+        let globs = extract_mdc_globs(&frontmatter);
+        if globs.is_empty() {
+            // No globs and not alwaysApply — skip (manual-trigger only)
+            continue;
+        }
+
+        // Check if any project files match the globs
+        let has_match = globs.iter().any(|pattern| {
+            let full_pattern = format!("{}/{}", project_dir.display(), pattern);
+            glob::glob(&full_pattern)
+                .map(|mut matches| matches.next().is_some())
+                .unwrap_or(false)
+        });
+
+        if has_match {
+            results.push(content);
+        }
+    }
+
+    results
+}
+
+fn parse_mdc_frontmatter(text: &str) -> Option<(String, String)> {
+    let text = text.trim_start();
+    if !text.starts_with("---") {
+        return Some((String::new(), text.to_string()));
+    }
+    let after_first = &text[3..];
+    let end = after_first.find("---")?;
+    let fm = after_first[..end].to_string();
+    let content = after_first[end + 3..].to_string();
+    Some((fm, content))
+}
+
+/// Extract glob patterns from MDC frontmatter.
+/// Handles both inline (`globs: "*.rs"`) and list format:
+/// ```yaml
+/// globs:
+///   - src/**/*.rs
+///   - tests/*.rs
+/// ```
+fn extract_mdc_globs(frontmatter: &str) -> Vec<String> {
+    let mut globs = Vec::new();
+    let mut in_globs = false;
+
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("globs:") {
+            let rest = trimmed.strip_prefix("globs:").unwrap().trim();
+            if !rest.is_empty() {
+                // Inline format: globs: *.rs or globs: "*.rs"
+                // Could also be comma-separated
+                for g in rest.split(',') {
+                    let g = g.trim().trim_matches('"').trim_matches('\'').trim();
+                    if !g.is_empty() {
+                        globs.push(g.to_string());
+                    }
+                }
+                in_globs = false;
+            } else {
+                // List format follows on next lines
+                in_globs = true;
+            }
+            continue;
+        }
+
+        if in_globs {
+            if let Some(item) = trimmed.strip_prefix("- ") {
+                let item = item.trim().trim_matches('"').trim_matches('\'');
+                if !item.is_empty() {
+                    globs.push(item.to_string());
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                // Non-list line means globs section ended
+                in_globs = false;
+            }
+        }
+    }
+
+    globs
+}
+
+#[cfg(test)]
+mod mdc_tests {
+    use super::*;
+
+    #[test]
+    fn parse_always_apply_mdc() {
+        let text = "---\nalwaysApply: true\n---\n\n# Rust Standards\n\nUse edition 2024.";
+        let (fm, content) = parse_mdc_frontmatter(text).unwrap();
+        assert!(fm.contains("alwaysApply: true"));
+        assert!(content.contains("Rust Standards"));
+    }
+
+    #[test]
+    fn extract_list_globs() {
+        let fm = "description: test\nglobs:\n  - src/**/*.rs\n  - tests/*.rs\nalwaysApply: false";
+        let globs = extract_mdc_globs(fm);
+        assert_eq!(globs, vec!["src/**/*.rs", "tests/*.rs"]);
+    }
+
+    #[test]
+    fn extract_inline_globs() {
+        let fm = "globs: \"*.ts\", \"*.tsx\"\nalwaysApply: false";
+        let globs = extract_mdc_globs(fm);
+        assert_eq!(globs, vec!["*.ts", "*.tsx"]);
+    }
+
+    #[test]
+    fn no_globs_no_always_apply_skipped() {
+        let fm = "description: manual rule\nalwaysApply: false";
+        let globs = extract_mdc_globs(fm);
+        assert!(globs.is_empty());
     }
 }
