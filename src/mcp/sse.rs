@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use reqwest::Client;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,18 +46,31 @@ impl SseTransport {
 impl McpTransport for SseTransport {
     async fn initialize(&mut self) -> Result<()> {
         let resp = self.http.get(&self.url).send().await.context("failed to connect to SSE endpoint")?;
-        let body = resp.text().await?;
 
-        for line in body.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data.starts_with("http") || data.starts_with('/') {
-                    self.messages_url = Some(if data.starts_with('/') {
-                        let base = &self.url[..self.url.rfind('/').unwrap_or(self.url.len())];
-                        format!("{}{}", base, data)
-                    } else {
-                        data.to_string()
-                    });
-                    break;
+        // Real SSE servers never close the connection, so we must not call
+        // resp.text() — it would block forever. Instead, stream the bytes and
+        // read line-by-line, breaking as soon as we find the endpoint URL.
+        let mut byte_stream = resp.bytes_stream();
+        let mut line_buf = String::new();
+
+        'outer: while let Some(chunk) = byte_stream.next().await {
+            let chunk = chunk.context("SSE stream read error")?;
+            line_buf.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(nl) = line_buf.find('\n') {
+                let line = line_buf[..nl].trim_end_matches('\r').to_string();
+                line_buf = line_buf[nl + 1..].to_string();
+
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data.starts_with("http") || data.starts_with('/') {
+                        self.messages_url = Some(if data.starts_with('/') {
+                            let base = &self.url[..self.url.rfind('/').unwrap_or(self.url.len())];
+                            format!("{}{}", base, data)
+                        } else {
+                            data.to_string()
+                        });
+                        break 'outer;
+                    }
                 }
             }
         }

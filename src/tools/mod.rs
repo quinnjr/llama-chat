@@ -3,17 +3,9 @@ pub mod filesystem;
 pub mod permissions;
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::api::types::{ToolDefinition, FunctionDefinition};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub tool_call_id: String,
-    pub content: String,
-    pub success: bool,
-}
 
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {

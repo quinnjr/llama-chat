@@ -67,6 +67,7 @@ impl ApiClient {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut done_sent = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("stream read error")?;
@@ -90,13 +91,17 @@ impl ApiClient {
                         }
                         if choice.finish_reason.is_some() {
                             let _ = tx.send(StreamEvent::Done);
+                            done_sent = true;
                         }
                     }
                 }
             }
         }
 
-        let _ = tx.send(StreamEvent::Done);
+        // Fallback: stream ended without a finish_reason (e.g. connection drop)
+        if !done_sent {
+            let _ = tx.send(StreamEvent::Done);
+        }
         Ok(())
     }
 }

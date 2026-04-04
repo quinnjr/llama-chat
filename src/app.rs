@@ -362,21 +362,28 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            tc.function.arguments.clone()
+            format!("{} {}", tool_name, tc.function.arguments)
         };
 
-        if tool_name == "shell" {
-            if let Some(ref cmd) = shell::extract_command(&tc.function.arguments) {
-                if self.permissions.is_allowed(cmd) {
-                    self.messages.push(ChatEntry::ToolCall {
-                        name: tool_name.clone(),
-                        command: command_display,
-                        status: "allowed".into(),
-                    });
-                    self.execute_tool_call(tc);
-                    return;
-                }
-            }
+        // All built-in tool calls go through the permission system. Use the
+        // extracted shell command for permission lookups so that saved rules
+        // created against bare commands continue to match; for other tools use
+        // the full "{tool} {args}" display string.
+        let permission_key = if tool_name == "shell" {
+            shell::extract_command(&tc.function.arguments)
+                .unwrap_or_else(|| tc.function.arguments.clone())
+        } else {
+            command_display.clone()
+        };
+
+        if self.permissions.is_allowed(&permission_key) {
+            self.messages.push(ChatEntry::ToolCall {
+                name: tool_name.clone(),
+                command: command_display,
+                status: "allowed".into(),
+            });
+            self.execute_tool_call(tc);
+        } else {
             self.messages.push(ChatEntry::ToolCall {
                 name: tool_name.clone(),
                 command: command_display.clone(),
@@ -388,13 +395,6 @@ impl App {
                 tool_call_id: tc.id.clone(),
                 arguments: tc.function.arguments.clone(),
             });
-        } else {
-            self.messages.push(ChatEntry::ToolCall {
-                name: tool_name.clone(),
-                command: command_display,
-                status: "ok".into(),
-            });
-            self.execute_tool_call(tc);
         }
     }
 
@@ -442,11 +442,16 @@ impl App {
         });
     }
 
-    pub fn handle_tool_result(&mut self, tool_call_id: String, result: String, _success: bool) {
-        self.messages.push(ChatEntry::ToolOutput(result.clone()));
+    pub fn handle_tool_result(&mut self, tool_call_id: String, result: String, success: bool) {
+        let content = if success {
+            result
+        } else {
+            format!("Error: {}", result)
+        };
+        self.messages.push(ChatEntry::ToolOutput(content.clone()));
         self.conversation.push(Message {
             role: "tool".into(),
-            content: Some(result),
+            content: Some(content),
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
         });
@@ -479,7 +484,9 @@ impl App {
             if let Some(ChatEntry::ToolCall { status, .. }) = self.messages.last_mut() {
                 *status = "denied".into();
             }
-            self.pending_tool_calls.remove(0);
+            if !self.pending_tool_calls.is_empty() {
+                self.pending_tool_calls.remove(0);
+            }
             self.conversation.push(Message {
                 role: "tool".into(),
                 content: Some("Permission denied by user.".into()),

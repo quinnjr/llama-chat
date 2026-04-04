@@ -36,12 +36,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             "[S]",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("ave always  ", Style::default().fg(theme.fg)),
-        Span::styled(
-            "[P]",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("attern...", Style::default().fg(theme.fg)),
+        Span::styled("ave always", Style::default().fg(theme.fg)),
     ]);
 
     let prompt = Paragraph::new(vec![tool_line, options_line]);
