@@ -20,7 +20,10 @@ mod tests {
     fn parse_content_delta() {
         let line = r#"data: {"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}"#;
         let resp = parse_sse_line(line).unwrap();
-        assert_eq!(resp.choices[0].delta.as_ref().unwrap().content.as_deref(), Some("Hi"));
+        assert_eq!(
+            resp.choices[0].delta.as_ref().unwrap().content.as_deref(),
+            Some("Hi")
+        );
     }
 
     #[test]

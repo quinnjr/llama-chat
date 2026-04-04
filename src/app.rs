@@ -3,19 +3,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::api::client::{ApiClient, StreamEvent};
 use crate::api::types::*;
-use crate::config::settings::AppConfig;
 use crate::config::mcp_config::McpConfig;
+use crate::config::settings::AppConfig;
 use crate::config::theme::Theme;
 use crate::event::AppEvent;
 use crate::mcp::McpServer;
 use crate::skills::{self, Skill};
+use crate::tools::filesystem::{EditFileTool, ListFilesTool, ReadFileTool, WriteFileTool};
 use crate::tools::permissions::PermissionManager;
 use crate::tools::shell::{self, ShellTool};
-use crate::tools::filesystem::{ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool};
 use crate::tools::{Tool, ToolRegistry};
 
 pub struct App {
@@ -56,7 +56,11 @@ pub enum ChatEntry {
     User(String),
     Assistant(String),
     Thinking(String),
-    ToolCall { name: String, command: String, status: String },
+    ToolCall {
+        name: String,
+        command: String,
+        status: String,
+    },
     ToolOutput(String),
     System(String),
 }
@@ -79,13 +83,13 @@ impl App {
         let project_dir = std::env::current_dir()?;
 
         let server_key = &config.defaults.server;
-        let server_config = config.servers.get(server_key)
-            .cloned()
-            .unwrap_or_else(|| crate::config::settings::ServerConfig {
+        let server_config = config.servers.get(server_key).cloned().unwrap_or_else(|| {
+            crate::config::settings::ServerConfig {
                 name: "Local Ollama".into(),
                 url: "http://localhost:11434/v1".into(),
                 api_key: None,
-            });
+            }
+        });
         let server_name = server_config.name.clone();
         let api_client = ApiClient::new(server_config);
 
@@ -103,8 +107,8 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("llama-chat/skills");
         let project_skills_dir = project_dir.join(".llama-chat/skills");
-        let skills = skills::load_all_skills(&global_skills_dir, &project_skills_dir)
-            .unwrap_or_default();
+        let skills =
+            skills::load_all_skills(&global_skills_dir, &project_skills_dir).unwrap_or_default();
 
         let mut conversation = Vec::new();
 
@@ -119,14 +123,15 @@ impl App {
         for path in &rule_files {
             if path.exists()
                 && let Ok(content) = std::fs::read_to_string(path)
-                    && !content.trim().is_empty() {
-                        conversation.push(Message {
-                            role: "system".into(),
-                            content: Some(content),
-                            tool_calls: None,
-                            tool_call_id: None,
-                        });
-                    }
+                && !content.trim().is_empty()
+            {
+                conversation.push(Message {
+                    role: "system".into(),
+                    content: Some(content),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
         }
 
         // Load Cursor MDC rules from .cursor/rules/*.mdc
@@ -163,7 +168,9 @@ impl App {
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
             session_allow: ["read_file", "write_file", "edit_file", "list_files"]
-                .iter().map(|s| s.to_string()).collect(),
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             event_tx,
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
@@ -209,18 +216,19 @@ impl App {
             "/clear" => {
                 self.messages.clear();
                 self.conversation.retain(|m| m.role == "system");
-                self.messages.push(ChatEntry::System("Conversation cleared.".into()));
+                self.messages
+                    .push(ChatEntry::System("Conversation cleared.".into()));
             }
             "/model" => {
                 if let Some(model) = arg {
                     self.active_model = model.to_string();
-                    self.messages.push(ChatEntry::System(
-                        format!("Switched to model: {model}")
-                    ));
+                    self.messages
+                        .push(ChatEntry::System(format!("Switched to model: {model}")));
                 } else {
-                    self.messages.push(ChatEntry::System(
-                        format!("Current model: {}. Fetching available models...", self.active_model)
-                    ));
+                    self.messages.push(ChatEntry::System(format!(
+                        "Current model: {}. Fetching available models...",
+                        self.active_model
+                    )));
                     let tx = self.event_tx.clone();
                     let server = self.api_client.server().clone();
                     let client = ApiClient::new(server);
@@ -230,9 +238,8 @@ impl App {
                                 let _ = tx.send(AppEvent::ModelsLoaded(models));
                             }
                             Err(e) => {
-                                let _ = tx.send(AppEvent::Error(
-                                    format!("Failed to list models: {e}"),
-                                ));
+                                let _ =
+                                    tx.send(AppEvent::Error(format!("Failed to list models: {e}")));
                             }
                         }
                     });
@@ -243,27 +250,34 @@ impl App {
                     if let Some(server) = self.config.servers.get(name) {
                         self.api_client.set_server(server.clone());
                         self.active_server_name = server.name.clone();
-                        self.messages.push(ChatEntry::System(
-                            format!("Switched to server: {}", server.name)
-                        ));
+                        self.messages.push(ChatEntry::System(format!(
+                            "Switched to server: {}",
+                            server.name
+                        )));
                     } else {
-                        let available: Vec<&str> = self.config.servers.keys()
-                            .map(|s| s.as_str()).collect();
-                        self.messages.push(ChatEntry::System(
-                            format!("Unknown server '{name}'. Available: {}", available.join(", "))
-                        ));
+                        let available: Vec<&str> =
+                            self.config.servers.keys().map(|s| s.as_str()).collect();
+                        self.messages.push(ChatEntry::System(format!(
+                            "Unknown server '{name}'. Available: {}",
+                            available.join(", ")
+                        )));
                     }
                 } else {
-                    let list: Vec<String> = self.config.servers.iter()
+                    let list: Vec<String> = self
+                        .config
+                        .servers
+                        .iter()
                         .map(|(k, v)| format!("  {k} — {}", v.name))
                         .collect();
-                    self.messages.push(ChatEntry::System(
-                        format!("Servers:\n{}", list.join("\n"))
-                    ));
+                    self.messages
+                        .push(ChatEntry::System(format!("Servers:\n{}", list.join("\n"))));
                 }
             }
             "/tools" => {
-                let mut lines = vec![format!("Built-in tools: {}", self.tool_registry.tool_count())];
+                let mut lines = vec![format!(
+                    "Built-in tools: {}",
+                    self.tool_registry.tool_count()
+                )];
                 if !self.mcp_tool_defs.is_empty() {
                     lines.push(format!("MCP tools: {}", self.mcp_tool_defs.len()));
                 }
@@ -271,26 +285,28 @@ impl App {
             }
             "/skills" => {
                 if self.skills.is_empty() {
-                    self.messages.push(ChatEntry::System("No skills loaded.".into()));
+                    self.messages
+                        .push(ChatEntry::System("No skills loaded.".into()));
                 } else {
-                    let list: Vec<String> = self.skills.values()
+                    let list: Vec<String> = self
+                        .skills
+                        .values()
                         .map(|s| format!("  /{} — {}", s.name, s.description))
                         .collect();
-                    self.messages.push(ChatEntry::System(
-                        format!("Skills:\n{}", list.join("\n"))
-                    ));
+                    self.messages
+                        .push(ChatEntry::System(format!("Skills:\n{}", list.join("\n"))));
                 }
             }
             "/init" => {
                 let agents_path = self.project_dir.join("AGENTS.md");
                 if agents_path.exists() {
                     self.messages.push(ChatEntry::System(
-                        "AGENTS.md already exists. Edit it directly to update.".into()
+                        "AGENTS.md already exists. Edit it directly to update.".into(),
                     ));
                 } else {
                     // Ask the model to generate AGENTS.md by examining the project
                     self.messages.push(ChatEntry::System(
-                        "Generating AGENTS.md for this project...".into()
+                        "Generating AGENTS.md for this project...".into(),
                     ));
                     self.messages.push(ChatEntry::User("Examine this project's structure, languages, and conventions. Then create an AGENTS.md file in the project root that describes:\n\n1. What this project is and its purpose\n2. Key architecture decisions and patterns\n3. Coding conventions (naming, style, error handling)\n4. How to build, test, and run the project\n5. Important files and directories\n6. Any rules an AI agent should follow when working on this codebase\n\nUse the list_files and read_file tools to understand the project, then write_file to create AGENTS.md. Be specific to this project — no generic boilerplate.".into()));
                     self.conversation.push(Message {
@@ -316,13 +332,13 @@ impl App {
                         tool_calls: None,
                         tool_call_id: None,
                     });
-                    self.messages.push(ChatEntry::System(
-                        format!("Skill '{}' activated.", skill.name)
-                    ));
+                    self.messages.push(ChatEntry::System(format!(
+                        "Skill '{}' activated.",
+                        skill.name
+                    )));
                 } else {
-                    self.messages.push(ChatEntry::System(
-                        format!("Unknown command: {other}")
-                    ));
+                    self.messages
+                        .push(ChatEntry::System(format!("Unknown command: {other}")));
                 }
             }
         }
@@ -337,7 +353,11 @@ impl App {
             model: self.active_model.clone(),
             messages: self.conversation.clone(),
             stream: true,
-            tools: if tool_defs.is_empty() { None } else { Some(tool_defs) },
+            tools: if tool_defs.is_empty() {
+                None
+            } else {
+                Some(tool_defs)
+            },
             think: true,
         };
 
@@ -367,7 +387,8 @@ impl App {
                 self.streaming_buffer.push_str(&text);
             }
             StreamEvent::ToolCallDelta(delta) => {
-                let entry = self.assembling_tool_calls
+                let entry = self
+                    .assembling_tool_calls
                     .entry(delta.index)
                     .or_insert_with(|| ToolCall {
                         id: String::new(),
@@ -420,13 +441,15 @@ impl App {
                     if let Some(think_end) = remaining.find("</think>") {
                         let thinking = &remaining[..think_end];
                         if !thinking.trim().is_empty() {
-                            self.messages.push(ChatEntry::Thinking(thinking.trim().to_string()));
+                            self.messages
+                                .push(ChatEntry::Thinking(thinking.trim().to_string()));
                         }
                         remaining = &remaining[think_end + "</think>".len()..];
                     } else {
                         // Unclosed think tag — treat rest as thinking
                         if !remaining.trim().is_empty() {
-                            self.messages.push(ChatEntry::Thinking(remaining.trim().to_string()));
+                            self.messages
+                                .push(ChatEntry::Thinking(remaining.trim().to_string()));
                         }
                         remaining = "";
                     }
@@ -437,7 +460,8 @@ impl App {
             }
 
             if !assistant_content.trim().is_empty() {
-                self.messages.push(ChatEntry::Assistant(assistant_content.trim().to_string()));
+                self.messages
+                    .push(ChatEntry::Assistant(assistant_content.trim().to_string()));
             }
 
             // Preserve the full text including think tags in conversation history
@@ -495,7 +519,10 @@ impl App {
             command_display.clone()
         };
 
-        if self.yolo || self.session_allow.contains(tool_name.as_str()) || self.permissions.is_allowed(&permission_key) {
+        if self.yolo
+            || self.session_allow.contains(tool_name.as_str())
+            || self.permissions.is_allowed(&permission_key)
+        {
             self.messages.push(ChatEntry::ToolCall {
                 name: tool_name.clone(),
                 command: command_display,
@@ -573,7 +600,8 @@ impl App {
         // Shell tool: stream output line-by-line
         if tool_name == "shell" {
             let args: Result<serde_json::Value, _> = serde_json::from_str(&arguments);
-            let command = args.ok()
+            let command = args
+                .ok()
                 .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
                 .unwrap_or(arguments.clone());
 
@@ -602,7 +630,9 @@ impl App {
                             let mut reader = tokio::io::BufReader::new(stdout);
                             let mut line = String::new();
                             while let Ok(n) = reader.read_line(&mut line).await {
-                                if n == 0 { break; }
+                                if n == 0 {
+                                    break;
+                                }
                                 let _ = tx.send(AppEvent::ToolOutputChunk {
                                     tool_call_id: cid.clone(),
                                     chunk: line.clone(),
@@ -621,7 +651,9 @@ impl App {
                             let mut reader = tokio::io::BufReader::new(stderr);
                             let mut line = String::new();
                             while let Ok(n) = reader.read_line(&mut line).await {
-                                if n == 0 { break; }
+                                if n == 0 {
+                                    break;
+                                }
                                 let _ = tx.send(AppEvent::ToolOutputChunk {
                                     tool_call_id: cid.clone(),
                                     chunk: format!("stderr: {}", line),
@@ -699,11 +731,19 @@ impl App {
             full_output = result.clone();
         }
 
-        let display = if success { full_output.clone() } else { format!("Error: {}", full_output) };
+        let display = if success {
+            full_output.clone()
+        } else {
+            format!("Error: {}", full_output)
+        };
         self.messages.push(ChatEntry::ToolOutput(display));
 
         // Send the full output to the model
-        let content = if success { full_output } else { format!("Error: {}", result) };
+        let content = if success {
+            full_output
+        } else {
+            format!("Error: {}", result)
+        };
         self.conversation.push(Message {
             role: "tool".into(),
             content: Some(content),
@@ -901,8 +941,8 @@ fn extract_mdc_globs(frontmatter: &str) -> Vec<String> {
 #[cfg(test)]
 mod app_tests {
     use super::*;
-    use tokio::sync::mpsc;
     use crate::api::client::StreamEvent;
+    use tokio::sync::mpsc;
 
     fn test_app() -> App {
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -939,7 +979,9 @@ mod app_tests {
         app.submit_message();
         assert!(app.input_buffer.is_empty());
         // Should have a system message with help text
-        assert!(matches!(app.messages.last(), Some(ChatEntry::System(s)) if s.contains("Commands:")));
+        assert!(
+            matches!(app.messages.last(), Some(ChatEntry::System(s)) if s.contains("Commands:"))
+        );
     }
 
     // --- handle_slash_command ---
@@ -1044,7 +1086,9 @@ mod app_tests {
     fn slash_tools() {
         let mut app = test_app();
         app.handle_slash_command("/tools");
-        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5")));
+        assert!(
+            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5"))
+        );
     }
 
     #[test]
@@ -1079,11 +1123,14 @@ mod app_tests {
     #[test]
     fn slash_skills_with_entries() {
         let mut app = test_app();
-        app.skills.insert("review".into(), crate::skills::Skill {
-            name: "review".into(),
-            description: "Review code".into(),
-            content: "Review content".into(),
-        });
+        app.skills.insert(
+            "review".into(),
+            crate::skills::Skill {
+                name: "review".into(),
+                description: "Review code".into(),
+                content: "Review content".into(),
+            },
+        );
         app.handle_slash_command("/skills");
         match &app.messages[0] {
             ChatEntry::System(s) => {
@@ -1098,26 +1145,36 @@ mod app_tests {
     fn slash_unknown_command() {
         let mut app = test_app();
         app.handle_slash_command("/foobar");
-        assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Unknown command: /foobar")));
+        assert!(
+            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Unknown command: /foobar"))
+        );
     }
 
     #[test]
     fn slash_skill_activation() {
         let mut app = test_app();
-        app.skills.insert("review".into(), crate::skills::Skill {
-            name: "review".into(),
-            description: "Review code".into(),
-            content: "Review the code carefully.".into(),
-        });
+        app.skills.insert(
+            "review".into(),
+            crate::skills::Skill {
+                name: "review".into(),
+                description: "Review code".into(),
+                content: "Review the code carefully.".into(),
+            },
+        );
         app.handle_slash_command("/review");
 
         // Skill content should be added to conversation as system message
         let last_conv = app.conversation.last().unwrap();
         assert_eq!(last_conv.role, "system");
-        assert_eq!(last_conv.content.as_deref(), Some("Review the code carefully."));
+        assert_eq!(
+            last_conv.content.as_deref(),
+            Some("Review the code carefully.")
+        );
 
         // User should see activation message
-        assert!(matches!(&app.messages.last().unwrap(), ChatEntry::System(s) if s.contains("activated")));
+        assert!(
+            matches!(&app.messages.last().unwrap(), ChatEntry::System(s) if s.contains("activated"))
+        );
     }
 
     // --- handle_stream_event ---
@@ -1232,7 +1289,9 @@ mod app_tests {
         for entry in &app.messages {
             assert!(!matches!(entry, ChatEntry::Thinking(_)));
         }
-        assert!(matches!(app.messages.last(), Some(ChatEntry::Assistant(s)) if s == "Actual answer."));
+        assert!(
+            matches!(app.messages.last(), Some(ChatEntry::Assistant(s)) if s == "Actual answer.")
+        );
     }
 
     #[test]
@@ -1246,7 +1305,9 @@ mod app_tests {
         for entry in &app.messages {
             match entry {
                 ChatEntry::Thinking(s) if s == "reasoning" => found_thinking = true,
-                ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => found_assistant = true,
+                ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => {
+                    found_assistant = true
+                }
                 _ => {}
             }
         }
@@ -1307,7 +1368,9 @@ mod app_tests {
         app.handle_tool_result("call_4".into(), "extra output".into(), true);
 
         // Both buffered and extra should be combined
-        assert!(matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s.contains("buffered") && s.contains("extra output")));
+        assert!(
+            matches!(&app.messages[0], ChatEntry::ToolOutput(s) if s.contains("buffered") && s.contains("extra output"))
+        );
     }
 
     // --- handle_permission_response ---
@@ -1332,11 +1395,20 @@ mod app_tests {
         assert!(app.pending_permission.is_none());
         // The last ToolCall entry should be "denied" (messages may have more
         // entries appended by process_next_tool_call, so search backwards)
-        let denied = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "denied"));
+        let denied = app
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "denied"));
         assert!(denied);
         // Should have added a permission denied tool message
         let tool_msg = app.conversation.iter().find(|m| m.role == "tool").unwrap();
-        assert!(tool_msg.content.as_deref().unwrap().contains("Permission denied"));
+        assert!(
+            tool_msg
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("Permission denied")
+        );
     }
 
     #[test]
@@ -1446,7 +1518,10 @@ mod app_tests {
         app.process_next_tool_call();
 
         // Should have been allowed (status "allowed") because read_file is in session_allow
-        let has_allowed = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
+        let has_allowed = app
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
         assert!(has_allowed);
     }
 
@@ -1466,7 +1541,10 @@ mod app_tests {
 
         // Should be pending permission
         assert!(app.pending_permission.is_some());
-        let has_pending = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "pending"));
+        let has_pending = app
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "pending"));
         assert!(has_pending);
     }
 
@@ -1486,7 +1564,10 @@ mod app_tests {
         app.process_next_tool_call();
 
         // Should be auto-allowed
-        let has_allowed = app.messages.iter().any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
+        let has_allowed = app
+            .messages
+            .iter()
+            .any(|m| matches!(m, ChatEntry::ToolCall { status, .. } if status == "allowed"));
         assert!(has_allowed);
         assert!(app.pending_permission.is_none());
     }
@@ -1497,21 +1578,25 @@ mod app_tests {
     async fn finalize_response_with_assembled_tool_calls() {
         let mut app = test_app();
         // Simulate assembled tool calls (as if streamed in via ToolCallDelta)
-        app.assembling_tool_calls.insert(0, ToolCall {
-            id: "call_assembled".into(),
-            call_type: "function".into(),
-            function: FunctionCall {
-                name: "read_file".into(),
-                arguments: r#"{"path": "/tmp/test"}"#.into(),
+        app.assembling_tool_calls.insert(
+            0,
+            ToolCall {
+                id: "call_assembled".into(),
+                call_type: "function".into(),
+                function: FunctionCall {
+                    name: "read_file".into(),
+                    arguments: r#"{"path": "/tmp/test"}"#.into(),
+                },
             },
-        });
+        );
 
         app.finalize_response();
 
         // Should have pushed the assistant message with tool_calls
-        let assistant_msg = app.conversation.iter().find(|m| {
-            m.role == "assistant" && m.tool_calls.is_some()
-        });
+        let assistant_msg = app
+            .conversation
+            .iter()
+            .find(|m| m.role == "assistant" && m.tool_calls.is_some());
         assert!(assistant_msg.is_some());
         let tool_calls = assistant_msg.unwrap().tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -1747,8 +1832,9 @@ mod mdc_tests {
 
         std::fs::write(
             rules_dir.join("style.mdc"),
-            "---\nalwaysApply: true\n---\n\nUse consistent formatting."
-        ).unwrap();
+            "---\nalwaysApply: true\n---\n\nUse consistent formatting.",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert_eq!(rules.len(), 1);
@@ -1766,8 +1852,9 @@ mod mdc_tests {
 
         std::fs::write(
             rules_dir.join("empty.mdc"),
-            "---\nalwaysApply: true\n---\n   "
-        ).unwrap();
+            "---\nalwaysApply: true\n---\n   ",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert!(rules.is_empty());
@@ -1785,8 +1872,9 @@ mod mdc_tests {
         std::fs::write(rules_dir.join("readme.md"), "# Not an MDC file").unwrap();
         std::fs::write(
             rules_dir.join("actual.mdc"),
-            "---\nalwaysApply: true\n---\n\nReal rule."
-        ).unwrap();
+            "---\nalwaysApply: true\n---\n\nReal rule.",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert_eq!(rules.len(), 1);
@@ -1804,8 +1892,9 @@ mod mdc_tests {
         // No globs, not alwaysApply — this is manual-trigger only
         std::fs::write(
             rules_dir.join("manual.mdc"),
-            "---\ndescription: manual\nalwaysApply: false\n---\n\nManual rule content."
-        ).unwrap();
+            "---\ndescription: manual\nalwaysApply: false\n---\n\nManual rule content.",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert!(rules.is_empty());
@@ -1825,8 +1914,9 @@ mod mdc_tests {
 
         std::fs::write(
             rules_dir.join("rust.mdc"),
-            "---\nglobs: *.rs\nalwaysApply: false\n---\n\nRust style rules."
-        ).unwrap();
+            "---\nglobs: *.rs\nalwaysApply: false\n---\n\nRust style rules.",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert_eq!(rules.len(), 1);
@@ -1845,8 +1935,9 @@ mod mdc_tests {
         // No .py files in this temp dir
         std::fs::write(
             rules_dir.join("python.mdc"),
-            "---\nglobs: *.py\nalwaysApply: false\n---\n\nPython rules."
-        ).unwrap();
+            "---\nglobs: *.py\nalwaysApply: false\n---\n\nPython rules.",
+        )
+        .unwrap();
 
         let rules = load_mdc_rules(&dir);
         assert!(rules.is_empty());

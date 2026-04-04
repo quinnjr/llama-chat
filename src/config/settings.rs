@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
@@ -26,8 +26,12 @@ pub struct DefaultsConfig {
     pub model: String,
 }
 
-fn default_server() -> String { "local".into() }
-fn default_model() -> String { "llama3:8b".into() }
+fn default_server() -> String {
+    "local".into()
+}
+fn default_model() -> String {
+    "llama3:8b".into()
+}
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
@@ -46,7 +50,9 @@ pub struct ThemeConfig {
     pub colors: HashMap<String, String>,
 }
 
-fn default_preset() -> String { "dark".into() }
+fn default_preset() -> String {
+    "dark".into()
+}
 
 impl Default for ThemeConfig {
     fn default() -> Self {
@@ -71,11 +77,14 @@ impl AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         let mut servers = HashMap::new();
-        servers.insert("local".into(), ServerConfig {
-            name: "Local Ollama".into(),
-            url: "http://localhost:11434/v1".into(),
-            api_key: None,
-        });
+        servers.insert(
+            "local".into(),
+            ServerConfig {
+                name: "Local Ollama".into(),
+                url: "http://localhost:11434/v1".into(),
+                api_key: None,
+            },
+        );
         Self {
             servers,
             defaults: DefaultsConfig::default(),
@@ -112,7 +121,10 @@ accent = "#818cf8"
 "##;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.servers.len(), 2);
-        assert_eq!(config.servers["remote"].api_key.as_deref(), Some("sk-secret"));
+        assert_eq!(
+            config.servers["remote"].api_key.as_deref(),
+            Some("sk-secret")
+        );
         assert_eq!(config.defaults.server, "local");
         assert_eq!(config.theme.preset, "dark");
         assert_eq!(config.theme.colors["accent"], "#818cf8");
@@ -146,7 +158,9 @@ accent = "#818cf8"
         let dir = std::env::temp_dir().join("llama-chat-test-settings-load");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [servers.myserver]
 name = "My Server"
 url = "http://example.com:8080/v1"
@@ -157,7 +171,9 @@ model = "codellama:7b"
 
 [theme]
 preset = "light"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let config = AppConfig::load(&path).unwrap();
         assert_eq!(config.servers.len(), 1);

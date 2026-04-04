@@ -30,20 +30,20 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 ]));
                 lines.push(Line::raw(""));
             }
-            ChatEntry::ToolCall { name, command, status } => {
+            ChatEntry::ToolCall {
+                name,
+                command,
+                status,
+            } => {
                 let status_span = match status.as_str() {
-                    "allowed" | "ok" => Span::styled(
-                        format!("✓ {status}"),
-                        Style::default().fg(theme.tool_ok),
-                    ),
+                    "allowed" | "ok" => {
+                        Span::styled(format!("✓ {status}"), Style::default().fg(theme.tool_ok))
+                    }
                     "denied" => Span::styled(
                         format!("✗ {status}"),
                         Style::default().fg(theme.tool_denied),
                     ),
-                    _ => Span::styled(
-                        format!("⏳ {status}"),
-                        Style::default().fg(theme.muted),
-                    ),
+                    _ => Span::styled(format!("⏳ {status}"), Style::default().fg(theme.muted)),
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("⚙ {name} "), Style::default().fg(theme.tool_name)),
@@ -63,7 +63,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 for think_line in text.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("  \u{1f4ad} {}", think_line),
-                        Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::ITALIC),
                     )));
                 }
                 lines.push(Line::raw(""));
@@ -71,7 +73,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             ChatEntry::System(text) => {
                 lines.push(Line::from(Span::styled(
                     text.as_str(),
-                    Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::ITALIC),
                 )));
                 lines.push(Line::raw(""));
             }
@@ -109,7 +113,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     for think_line in thinking.lines() {
                         lines.push(Line::from(Span::styled(
                             format!("  \u{1f4ad} {}", think_line),
-                            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                            Style::default()
+                                .fg(theme.muted)
+                                .add_modifier(Modifier::ITALIC),
                         )));
                     }
                     remaining = &remaining[think_end + "</think>".len()..];
@@ -118,7 +124,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     for think_line in remaining.lines() {
                         lines.push(Line::from(Span::styled(
                             format!("  \u{1f4ad} {}", think_line),
-                            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                            Style::default()
+                                .fg(theme.muted)
+                                .add_modifier(Modifier::ITALIC),
                         )));
                     }
                     remaining = "";

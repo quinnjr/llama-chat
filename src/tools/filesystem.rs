@@ -13,8 +13,12 @@ struct ReadFileArgs {
 
 #[async_trait]
 impl Tool for ReadFileTool {
-    fn name(&self) -> &str { "read_file" }
-    fn description(&self) -> &str { "Read the contents of a file at the given path." }
+    fn name(&self) -> &str {
+        "read_file"
+    }
+    fn description(&self) -> &str {
+        "Read the contents of a file at the given path."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -39,8 +43,12 @@ struct WriteFileArgs {
 
 #[async_trait]
 impl Tool for WriteFileTool {
-    fn name(&self) -> &str { "write_file" }
-    fn description(&self) -> &str { "Write content to a file at the given path. Creates the file if it doesn't exist, overwrites if it does." }
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn description(&self) -> &str {
+        "Write content to a file at the given path. Creates the file if it doesn't exist, overwrites if it does."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -57,7 +65,11 @@ impl Tool for WriteFileTool {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&args.path, &args.content).await?;
-        Ok(format!("Wrote {} bytes to {}", args.content.len(), args.path))
+        Ok(format!(
+            "Wrote {} bytes to {}",
+            args.content.len(),
+            args.path
+        ))
     }
 }
 
@@ -72,8 +84,12 @@ struct EditFileArgs {
 
 #[async_trait]
 impl Tool for EditFileTool {
-    fn name(&self) -> &str { "edit_file" }
-    fn description(&self) -> &str { "Edit a file by replacing an exact string match with new content. The old_string must match exactly once in the file." }
+    fn name(&self) -> &str {
+        "edit_file"
+    }
+    fn description(&self) -> &str {
+        "Edit a file by replacing an exact string match with new content. The old_string must match exactly once in the file."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -93,7 +109,11 @@ impl Tool for EditFileTool {
             anyhow::bail!("old_string not found in {}", args.path);
         }
         if count > 1 {
-            anyhow::bail!("old_string matches {} times in {} — must be unique", count, args.path);
+            anyhow::bail!(
+                "old_string matches {} times in {} — must be unique",
+                count,
+                args.path
+            );
         }
         let new_contents = contents.replacen(&args.old_string, &args.new_string, 1);
         tokio::fs::write(&args.path, &new_contents).await?;
@@ -112,8 +132,12 @@ struct ListFilesArgs {
 
 #[async_trait]
 impl Tool for ListFilesTool {
-    fn name(&self) -> &str { "list_files" }
-    fn description(&self) -> &str { "List files in a directory. Optionally filter with a glob pattern." }
+    fn name(&self) -> &str {
+        "list_files"
+    }
+    fn description(&self) -> &str {
+        "List files in a directory. Optionally filter with a glob pattern."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -171,7 +195,10 @@ mod tests {
         std::fs::write(&file, "hello world").unwrap();
 
         let tool = ReadFileTool;
-        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, file.display())).await.unwrap();
+        let result = tool
+            .execute(&format!(r#"{{"path": "{}"}}"#, file.display()))
+            .await
+            .unwrap();
         assert_eq!(result, "hello world");
 
         std::fs::remove_dir_all(dir).ok();
@@ -180,7 +207,9 @@ mod tests {
     #[tokio::test]
     async fn read_file_nonexistent() {
         let tool = ReadFileTool;
-        let result = tool.execute(r#"{"path": "/tmp/llama-chat-fs-test-nonexistent-file-xyz"}"#).await;
+        let result = tool
+            .execute(r#"{"path": "/tmp/llama-chat-fs-test-nonexistent-file-xyz"}"#)
+            .await;
         assert!(result.is_err());
     }
 
@@ -199,10 +228,13 @@ mod tests {
         let file = dir.join("output.txt");
 
         let tool = WriteFileTool;
-        let result = tool.execute(&format!(
-            r#"{{"path": "{}", "content": "test content"}}"#,
-            file.display()
-        )).await.unwrap();
+        let result = tool
+            .execute(&format!(
+                r#"{{"path": "{}", "content": "test content"}}"#,
+                file.display()
+            ))
+            .await
+            .unwrap();
 
         assert!(result.contains("12 bytes"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "test content");
@@ -220,7 +252,9 @@ mod tests {
         tool.execute(&format!(
             r#"{{"path": "{}", "content": "new content"}}"#,
             file.display()
-        )).await.unwrap();
+        ))
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new content");
 
@@ -236,7 +270,9 @@ mod tests {
         tool.execute(&format!(
             r#"{{"path": "{}", "content": "deep"}}"#,
             file.display()
-        )).await.unwrap();
+        ))
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "deep");
 
@@ -279,10 +315,12 @@ mod tests {
         std::fs::write(&file, "abc def").unwrap();
 
         let tool = EditFileTool;
-        let result = tool.execute(&format!(
-            r#"{{"path": "{}", "old_string": "xyz", "new_string": "new"}}"#,
-            file.display()
-        )).await;
+        let result = tool
+            .execute(&format!(
+                r#"{{"path": "{}", "old_string": "xyz", "new_string": "new"}}"#,
+                file.display()
+            ))
+            .await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -297,10 +335,12 @@ mod tests {
         std::fs::write(&file, "aaa bbb aaa").unwrap();
 
         let tool = EditFileTool;
-        let result = tool.execute(&format!(
-            r#"{{"path": "{}", "old_string": "aaa", "new_string": "ccc"}}"#,
-            file.display()
-        )).await;
+        let result = tool
+            .execute(&format!(
+                r#"{{"path": "{}", "old_string": "aaa", "new_string": "ccc"}}"#,
+                file.display()
+            ))
+            .await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("2 times"));
@@ -334,7 +374,10 @@ mod tests {
         std::fs::write(dir.join("gamma.rs"), "").unwrap();
 
         let tool = ListFilesTool;
-        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, dir.display())).await.unwrap();
+        let result = tool
+            .execute(&format!(r#"{{"path": "{}"}}"#, dir.display()))
+            .await
+            .unwrap();
 
         assert!(result.contains("alpha.txt"));
         assert!(result.contains("beta.txt"));
@@ -351,10 +394,13 @@ mod tests {
         std::fs::write(dir.join("baz.txt"), "").unwrap();
 
         let tool = ListFilesTool;
-        let result = tool.execute(&format!(
-            r#"{{"path": "{}", "pattern": "*.rs"}}"#,
-            dir.display()
-        )).await.unwrap();
+        let result = tool
+            .execute(&format!(
+                r#"{{"path": "{}", "pattern": "*.rs"}}"#,
+                dir.display()
+            ))
+            .await
+            .unwrap();
 
         assert!(result.contains("foo.rs"));
         assert!(result.contains("bar.rs"));
@@ -368,7 +414,10 @@ mod tests {
         let dir = temp_dir("list-empty");
 
         let tool = ListFilesTool;
-        let result = tool.execute(&format!(r#"{{"path": "{}"}}"#, dir.display())).await.unwrap();
+        let result = tool
+            .execute(&format!(r#"{{"path": "{}"}}"#, dir.display()))
+            .await
+            .unwrap();
         assert!(result.is_empty());
 
         std::fs::remove_dir_all(dir).ok();

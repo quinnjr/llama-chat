@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mcp::McpTransport;
 use crate::mcp::types::*;
@@ -30,7 +30,11 @@ impl StdioTransport {
         }
     }
 
-    async fn send_request(&mut self, method: &str, params: Option<serde_json::Value>) -> Result<JsonRpcResponse> {
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<JsonRpcResponse> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = JsonRpcRequest::new(id, method, params);
         let mut line = serde_json::to_string(&req)?;
@@ -44,8 +48,8 @@ impl StdioTransport {
         let mut response_line = String::new();
         reader.read_line(&mut response_line).await?;
 
-        let resp: JsonRpcResponse = serde_json::from_str(&response_line)
-            .context("failed to parse MCP response")?;
+        let resp: JsonRpcResponse =
+            serde_json::from_str(&response_line).context("failed to parse MCP response")?;
 
         if let Some(ref err) = resp.error {
             anyhow::bail!("MCP error {}: {}", err.code, err.message);
@@ -72,33 +76,45 @@ impl McpTransport for StdioTransport {
         self.reader = Some(BufReader::new(stdout));
         self.child = Some(child);
 
-        self.send_request("initialize", Some(serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "llama-chat", "version": "0.1.0" }
-        }))).await?;
+        self.send_request(
+            "initialize",
+            Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "llama-chat", "version": "0.1.0" }
+            })),
+        )
+        .await?;
 
         Ok(())
     }
 
     async fn list_tools(&mut self) -> Result<Vec<McpToolInfo>> {
         let resp = self.send_request("tools/list", None).await?;
-        let result: McpToolsResult = serde_json::from_value(
-            resp.result.context("no result in tools/list response")?
-        )?;
+        let result: McpToolsResult =
+            serde_json::from_value(resp.result.context("no result in tools/list response")?)?;
         Ok(result.tools)
     }
 
     async fn call_tool(&mut self, name: &str, arguments: serde_json::Value) -> Result<String> {
-        let resp = self.send_request("tools/call", Some(serde_json::json!({
-            "name": name, "arguments": arguments
-        }))).await?;
+        let resp = self
+            .send_request(
+                "tools/call",
+                Some(serde_json::json!({
+                    "name": name, "arguments": arguments
+                })),
+            )
+            .await?;
 
-        let result: McpCallResult = serde_json::from_value(
-            resp.result.context("no result in tools/call response")?
-        )?;
+        let result: McpCallResult =
+            serde_json::from_value(resp.result.context("no result in tools/call response")?)?;
 
-        Ok(result.content.iter().filter_map(|c| c.text.as_deref()).collect::<Vec<_>>().join("\n"))
+        Ok(result
+            .content
+            .iter()
+            .filter_map(|c| c.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 }
 

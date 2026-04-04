@@ -13,7 +13,9 @@ struct ShellArgs {
 
 #[async_trait]
 impl Tool for ShellTool {
-    fn name(&self) -> &str { "shell" }
+    fn name(&self) -> &str {
+        "shell"
+    }
 
     fn description(&self) -> &str {
         "Execute a shell command and return its output. Use for running programs, checking files, git operations, etc."
@@ -107,7 +109,10 @@ mod tests {
     #[tokio::test]
     async fn shell_execute_stderr() {
         let tool = ShellTool;
-        let result = tool.execute(r#"{"command": "echo oops >&2"}"#).await.unwrap();
+        let result = tool
+            .execute(r#"{"command": "echo oops >&2"}"#)
+            .await
+            .unwrap();
         assert!(result.contains("stderr:"));
         assert!(result.contains("oops"));
     }
@@ -122,7 +127,10 @@ mod tests {
     #[tokio::test]
     async fn shell_execute_both_stdout_and_stderr() {
         let tool = ShellTool;
-        let result = tool.execute(r#"{"command": "echo out; echo err >&2"}"#).await.unwrap();
+        let result = tool
+            .execute(r#"{"command": "echo out; echo err >&2"}"#)
+            .await
+            .unwrap();
         assert!(result.contains("out"));
         assert!(result.contains("stderr:"));
         assert!(result.contains("err"));

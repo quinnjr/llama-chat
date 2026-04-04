@@ -11,7 +11,9 @@ use crate::config::theme::Theme;
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let left = Span::styled(
         "llama-chat",
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
     );
 
     let model_span = Span::styled(
