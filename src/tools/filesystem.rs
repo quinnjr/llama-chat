@@ -132,10 +132,8 @@ impl Tool for ListFilesTool {
             format!("{}/*", args.path)
         };
         let mut entries = Vec::new();
-        for entry in glob::glob(&glob_pattern)? {
-            if let Ok(path) = entry {
-                entries.push(path.display().to_string());
-            }
+        for path in glob::glob(&glob_pattern)?.flatten() {
+            entries.push(path.display().to_string());
         }
         entries.sort();
         Ok(entries.join("\n"))

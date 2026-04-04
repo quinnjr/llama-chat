@@ -117,9 +117,9 @@ impl App {
             project_dir.join(".llama-chat/context.md"),
         ];
         for path in &rule_files {
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if !content.trim().is_empty() {
+            if path.exists()
+                && let Ok(content) = std::fs::read_to_string(path)
+                    && !content.trim().is_empty() {
                         conversation.push(Message {
                             role: "system".into(),
                             content: Some(content),
@@ -127,8 +127,6 @@ impl App {
                             tool_call_id: None,
                         });
                     }
-                }
-            }
         }
 
         // Load Cursor MDC rules from .cursor/rules/*.mdc

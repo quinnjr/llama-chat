@@ -39,14 +39,13 @@ impl StreamableHttpTransport {
 
         if content_type.contains("text/event-stream") {
             for line in body.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if let Ok(rpc_resp) = serde_json::from_str::<JsonRpcResponse>(data) {
+                if let Some(data) = line.strip_prefix("data: ")
+                    && let Ok(rpc_resp) = serde_json::from_str::<JsonRpcResponse>(data) {
                         if let Some(ref err) = rpc_resp.error {
                             anyhow::bail!("MCP error {}: {}", err.code, err.message);
                         }
                         return Ok(rpc_resp);
                     }
-                }
             }
             anyhow::bail!("no valid JSON-RPC response in SSE stream");
         } else {

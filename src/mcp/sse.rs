@@ -28,14 +28,13 @@ impl SseTransport {
         let body = resp.text().await?;
 
         for line in body.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                if let Ok(rpc_resp) = serde_json::from_str::<JsonRpcResponse>(data) {
+            if let Some(data) = line.strip_prefix("data: ")
+                && let Ok(rpc_resp) = serde_json::from_str::<JsonRpcResponse>(data) {
                     if let Some(ref err) = rpc_resp.error {
                         anyhow::bail!("MCP error {}: {}", err.code, err.message);
                     }
                     return Ok(rpc_resp);
                 }
-            }
         }
         let rpc_resp: JsonRpcResponse = serde_json::from_str(&body).context("failed to parse MCP SSE response")?;
         Ok(rpc_resp)
@@ -61,8 +60,8 @@ impl McpTransport for SseTransport {
                 let line = line_buf[..nl].trim_end_matches('\r').to_string();
                 line_buf = line_buf[nl + 1..].to_string();
 
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data.starts_with("http") || data.starts_with('/') {
+                if let Some(data) = line.strip_prefix("data: ")
+                    && (data.starts_with("http") || data.starts_with('/')) {
                         self.messages_url = Some(if data.starts_with('/') {
                             let base = &self.url[..self.url.rfind('/').unwrap_or(self.url.len())];
                             format!("{}{}", base, data)
@@ -71,7 +70,6 @@ impl McpTransport for SseTransport {
                         });
                         break 'outer;
                     }
-                }
             }
         }
 

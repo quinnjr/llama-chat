@@ -78,11 +78,10 @@ async fn main() -> Result<()> {
     let input_tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = ct_event::read() {
+            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
+                && let Ok(Event::Key(key)) = ct_event::read() {
                     let _ = input_tx.send(AppEvent::Key(key));
                 }
-            }
         }
     });
 
