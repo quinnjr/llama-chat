@@ -28,7 +28,10 @@ impl PermissionManager {
     }
 
     pub fn is_allowed(&self, command: &str) -> bool {
-        self.config.allow.iter().any(|pattern| glob_match(pattern, command))
+        self.config
+            .allow
+            .iter()
+            .any(|pattern| glob_match(pattern, command))
     }
 
     pub fn add_exact(&mut self, command: &str) -> Result<()> {

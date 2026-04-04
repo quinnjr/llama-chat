@@ -38,17 +38,19 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
     let raw = std::fs::read_to_string(path)?;
     let (frontmatter, content) = split_frontmatter(&raw)?;
 
-    let name = extract_field(&frontmatter, "name")
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string()
-        });
-    let description = extract_field(&frontmatter, "description")
-        .unwrap_or_default();
+    let name = extract_field(&frontmatter, "name").unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    });
+    let description = extract_field(&frontmatter, "description").unwrap_or_default();
 
-    Ok(Skill { name, description, content: content.trim().to_string() })
+    Ok(Skill {
+        name,
+        description,
+        content: content.trim().to_string(),
+    })
 }
 
 fn split_frontmatter(text: &str) -> Result<(String, String)> {
@@ -92,7 +94,10 @@ mod tests {
     fn extract_fields() {
         let fm = "name: review\ndescription: Review code for bugs";
         assert_eq!(extract_field(fm, "name"), Some("review".into()));
-        assert_eq!(extract_field(fm, "description"), Some("Review code for bugs".into()));
+        assert_eq!(
+            extract_field(fm, "description"),
+            Some("Review code for bugs".into())
+        );
         assert_eq!(extract_field(fm, "missing"), None);
     }
 
@@ -112,8 +117,16 @@ mod tests {
         std::fs::create_dir_all(&global).unwrap();
         std::fs::create_dir_all(&project).unwrap();
 
-        std::fs::write(global.join("review.md"), "---\nname: review\ndescription: global\n---\nGlobal review.").unwrap();
-        std::fs::write(project.join("review.md"), "---\nname: review\ndescription: project\n---\nProject review.").unwrap();
+        std::fs::write(
+            global.join("review.md"),
+            "---\nname: review\ndescription: global\n---\nGlobal review.",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("review.md"),
+            "---\nname: review\ndescription: project\n---\nProject review.",
+        )
+        .unwrap();
 
         let skills = load_all_skills(&global, &project).unwrap();
         assert_eq!(skills["review"].description, "project");
@@ -147,7 +160,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        std::fs::write(dir.join("myskill.md"), "---\ndescription: testing\n---\nSkill content here.").unwrap();
+        std::fs::write(
+            dir.join("myskill.md"),
+            "---\ndescription: testing\n---\nSkill content here.",
+        )
+        .unwrap();
 
         let skills = load_skills_from_dir(&dir).unwrap();
         assert!(skills.contains_key("myskill"));
@@ -194,7 +211,10 @@ mod tests {
     fn extract_field_with_quotes() {
         let fm = "name: \"quoted-name\"\ndescription: 'single-quoted'";
         assert_eq!(extract_field(fm, "name"), Some("quoted-name".into()));
-        assert_eq!(extract_field(fm, "description"), Some("single-quoted".into()));
+        assert_eq!(
+            extract_field(fm, "description"),
+            Some("single-quoted".into())
+        );
     }
 
     #[test]

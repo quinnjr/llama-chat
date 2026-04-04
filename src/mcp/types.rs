@@ -11,7 +11,12 @@ pub struct JsonRpcRequest {
 
 impl JsonRpcRequest {
     pub fn new(id: u64, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
-        Self { jsonrpc: "2.0", id, method: method.into(), params }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            method: method.into(),
+            params,
+        }
     }
 }
 
@@ -87,6 +92,9 @@ mod tests {
     fn deserialize_call_result() {
         let json = r#"{"content":[{"type":"text","text":"file contents here"}]}"#;
         let result: McpCallResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.content[0].text.as_deref(), Some("file contents here"));
+        assert_eq!(
+            result.content[0].text.as_deref(),
+            Some("file contents here")
+        );
     }
 }

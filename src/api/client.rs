@@ -56,10 +56,7 @@ impl ApiClient {
         if let Some(ref key) = self.server.api_key {
             req = req.bearer_auth(key);
         }
-        let response = req
-            .send()
-            .await
-            .context("failed to connect to server")?;
+        let response = req.send().await.context("failed to connect to server")?;
 
         if !response.status().is_success() {
             let status = response.status();

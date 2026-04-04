@@ -1,7 +1,7 @@
-pub mod types;
-pub mod stdio;
-pub mod sse;
 pub mod http;
+pub mod sse;
+pub mod stdio;
+pub mod types;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -45,11 +45,19 @@ impl McpServer {
         transport.initialize().await?;
         let tools = transport.list_tools().await?;
 
-        Ok(Self { name, transport, tools })
+        Ok(Self {
+            name,
+            transport,
+            tools,
+        })
     }
 
     #[cfg(not(tarpaulin_include))]
-    pub async fn call_tool(&mut self, tool_name: &str, arguments: serde_json::Value) -> Result<String> {
+    pub async fn call_tool(
+        &mut self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<String> {
         self.transport.call_tool(tool_name, arguments).await
     }
 }

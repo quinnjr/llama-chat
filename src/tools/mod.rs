@@ -1,11 +1,11 @@
-pub mod shell;
 pub mod filesystem;
 pub mod permissions;
+pub mod shell;
 
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::api::types::{ToolDefinition, FunctionDefinition};
+use crate::api::types::{FunctionDefinition, ToolDefinition};
 
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -32,7 +32,9 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -55,19 +57,35 @@ mod tests {
     struct MockTool;
     #[async_trait::async_trait]
     impl Tool for MockTool {
-        fn name(&self) -> &str { "mock" }
-        fn description(&self) -> &str { "A mock tool" }
-        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
-        async fn execute(&self, _args: &str) -> anyhow::Result<String> { Ok("mock result".into()) }
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn description(&self) -> &str {
+            "A mock tool"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(&self, _args: &str) -> anyhow::Result<String> {
+            Ok("mock result".into())
+        }
     }
 
     struct AnotherMockTool;
     #[async_trait::async_trait]
     impl Tool for AnotherMockTool {
-        fn name(&self) -> &str { "another" }
-        fn description(&self) -> &str { "Another mock tool" }
-        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({"type": "object", "properties": {}}) }
-        async fn execute(&self, _args: &str) -> anyhow::Result<String> { Ok("another result".into()) }
+        fn name(&self) -> &str {
+            "another"
+        }
+        fn description(&self) -> &str {
+            "Another mock tool"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _args: &str) -> anyhow::Result<String> {
+            Ok("another result".into())
+        }
     }
 
     #[test]
@@ -110,7 +128,10 @@ mod tests {
         let def = tool.to_definition();
         assert_eq!(def.function.name, "mock");
         assert_eq!(def.function.description, "A mock tool");
-        assert_eq!(def.function.parameters, serde_json::json!({"type": "object"}));
+        assert_eq!(
+            def.function.parameters,
+            serde_json::json!({"type": "object"})
+        );
     }
 
     #[test]

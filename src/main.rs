@@ -1,11 +1,11 @@
+mod api;
 mod app;
 mod config;
 mod event;
-mod api;
 mod mcp;
+mod skills;
 mod tools;
 mod ui;
-mod skills;
 
 use std::io;
 use std::path::PathBuf;
@@ -14,15 +14,15 @@ use anyhow::Result;
 use crossterm::{
     event::{self as ct_event, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::App;
-use crate::config::settings::AppConfig;
 use crate::config::mcp_config::McpConfig;
+use crate::config::settings::AppConfig;
 use crate::event::AppEvent;
 
 #[cfg(not(tarpaulin_include))]
@@ -80,9 +80,10 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loop {
             if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
-                && let Ok(Event::Key(key)) = ct_event::read() {
-                    let _ = input_tx.send(AppEvent::Key(key));
-                }
+                && let Ok(Event::Key(key)) = ct_event::read()
+            {
+                let _ = input_tx.send(AppEvent::Key(key));
+            }
         }
     });
 
@@ -132,9 +133,7 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         match key.code {
-                            KeyCode::Char('c')
-                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.should_quit = true;
                             }
                             KeyCode::Enter => {
@@ -163,7 +162,10 @@ async fn main() -> Result<()> {
                 } => {
                     app.handle_tool_result(tool_call_id, result, success);
                 }
-                AppEvent::ToolOutputChunk { tool_call_id: _, chunk } => {
+                AppEvent::ToolOutputChunk {
+                    tool_call_id: _,
+                    chunk,
+                } => {
                     app.tool_output_buffer.push_str(&chunk);
                 }
                 AppEvent::McpConnected {
@@ -174,8 +176,7 @@ async fn main() -> Result<()> {
                     {
                         let srv = server.lock().await;
                         for tool in &srv.tools {
-                            let full_name =
-                                format!("mcp_{}_{}", server_name, tool.name);
+                            let full_name = format!("mcp_{}_{}", server_name, tool.name);
                             app.mcp_tool_map.insert(
                                 full_name.clone(),
                                 (server_name.clone(), tool.name.clone()),
@@ -184,10 +185,7 @@ async fn main() -> Result<()> {
                                 tool_type: "function".into(),
                                 function: crate::api::types::FunctionDefinition {
                                     name: full_name,
-                                    description: tool
-                                        .description
-                                        .clone()
-                                        .unwrap_or_default(),
+                                    description: tool.description.clone().unwrap_or_default(),
                                     parameters: tool.input_schema.clone(),
                                 },
                             });
@@ -210,8 +208,7 @@ async fn main() -> Result<()> {
                             "No models available on this server.".into(),
                         ));
                     } else {
-                        let list: Vec<String> =
-                            models.iter().map(|m| format!("  {m}")).collect();
+                        let list: Vec<String> = models.iter().map(|m| format!("  {m}")).collect();
                         app.messages.push(app::ChatEntry::System(format!(
                             "Available models:\n{}",
                             list.join("\n")
@@ -219,7 +216,8 @@ async fn main() -> Result<()> {
                     }
                 }
                 AppEvent::Error(e) => {
-                    app.messages.push(app::ChatEntry::System(format!("Error: {e}")));
+                    app.messages
+                        .push(app::ChatEntry::System(format!("Error: {e}")));
                 }
             }
         }

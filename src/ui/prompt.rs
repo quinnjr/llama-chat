@@ -18,7 +18,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         let input_line = Line::from(vec![
             Span::styled(
                 "Pattern: ",
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(pattern_buf.as_str(), Style::default().fg(theme.fg)),
             Span::styled("\u{25CF}", Style::default().fg(theme.fg)),
@@ -43,22 +45,30 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let options_line = Line::from(vec![
         Span::styled(
             "[A]",
-            Style::default().fg(theme.tool_ok).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.tool_ok)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("llow  ", Style::default().fg(theme.fg)),
         Span::styled(
             "[D]",
-            Style::default().fg(theme.tool_denied).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.tool_denied)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("eny  ", Style::default().fg(theme.fg)),
         Span::styled(
             "[S]",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("ave always  ", Style::default().fg(theme.fg)),
         Span::styled(
             "[P]",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("attern...", Style::default().fg(theme.fg)),
     ]);
