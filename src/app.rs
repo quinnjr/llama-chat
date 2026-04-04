@@ -15,7 +15,7 @@ use crate::mcp::McpServer;
 use crate::skills::{self, Skill};
 use crate::tools::permissions::PermissionManager;
 use crate::tools::shell::{self, ShellTool};
-use crate::tools::filesystem::{ReadFileTool, WriteFileTool, ListFilesTool};
+use crate::tools::filesystem::{ReadFileTool, WriteFileTool, EditFileTool, ListFilesTool};
 use crate::tools::{Tool, ToolRegistry};
 
 pub struct App {
@@ -42,6 +42,7 @@ pub struct App {
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub assembling_tool_calls: HashMap<u32, ToolCall>,
+    pub session_allow: std::collections::HashSet<String>,
     pub tool_output_buffer: String,
     pub thinking_buffer: String,
     pub in_thinking: bool,
@@ -91,6 +92,7 @@ impl App {
         tool_registry.register(Box::new(ShellTool));
         tool_registry.register(Box::new(ReadFileTool));
         tool_registry.register(Box::new(WriteFileTool));
+        tool_registry.register(Box::new(EditFileTool));
         tool_registry.register(Box::new(ListFilesTool));
         let tool_count = tool_registry.tool_count();
 
@@ -136,6 +138,8 @@ impl App {
             mcp_servers: HashMap::new(),
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
+            session_allow: ["read_file", "write_file", "edit_file", "list_files"]
+                .iter().map(|s| s.to_string()).collect(),
             event_tx,
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
@@ -445,7 +449,7 @@ impl App {
             command_display.clone()
         };
 
-        if self.permissions.is_allowed(&permission_key) {
+        if self.session_allow.contains(tool_name.as_str()) || self.permissions.is_allowed(&permission_key) {
             self.messages.push(ChatEntry::ToolCall {
                 name: tool_name.clone(),
                 command: command_display,
@@ -615,6 +619,7 @@ impl App {
             let result = match tool_name.as_str() {
                 "read_file" => ReadFileTool.execute(&arguments).await,
                 "write_file" => WriteFileTool.execute(&arguments).await,
+                "edit_file" => EditFileTool.execute(&arguments).await,
                 "list_files" => ListFilesTool.execute(&arguments).await,
                 _ => Err(anyhow::anyhow!("unknown tool")),
             };

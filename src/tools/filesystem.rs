@@ -61,6 +61,46 @@ impl Tool for WriteFileTool {
     }
 }
 
+pub struct EditFileTool;
+
+#[derive(Deserialize)]
+struct EditFileArgs {
+    path: String,
+    old_string: String,
+    new_string: String,
+}
+
+#[async_trait]
+impl Tool for EditFileTool {
+    fn name(&self) -> &str { "edit_file" }
+    fn description(&self) -> &str { "Edit a file by replacing an exact string match with new content. The old_string must match exactly once in the file." }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path to edit" },
+                "old_string": { "type": "string", "description": "The exact string to find and replace (must be unique in the file)" },
+                "new_string": { "type": "string", "description": "The replacement string" }
+            },
+            "required": ["path", "old_string", "new_string"]
+        })
+    }
+    async fn execute(&self, arguments: &str) -> Result<String> {
+        let args: EditFileArgs = serde_json::from_str(arguments)?;
+        let contents = tokio::fs::read_to_string(&args.path).await?;
+        let count = contents.matches(&args.old_string).count();
+        if count == 0 {
+            anyhow::bail!("old_string not found in {}", args.path);
+        }
+        if count > 1 {
+            anyhow::bail!("old_string matches {} times in {} — must be unique", count, args.path);
+        }
+        let new_contents = contents.replacen(&args.old_string, &args.new_string, 1);
+        tokio::fs::write(&args.path, &new_contents).await?;
+        Ok(format!("Edited {} — replaced 1 occurrence", args.path))
+    }
+}
+
 pub struct ListFilesTool;
 
 #[derive(Deserialize)]
