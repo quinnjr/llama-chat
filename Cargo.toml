@@ -2,6 +2,11 @@
 name = "llama-chat"
 version = "0.1.0"
 edition = "2024"
+description = "A Claude Code-like TUI chat client for Ollama and llama.cpp servers"
+license = "MIT"
+repository = "https://github.com/quinnjr/llama-chat"
+keywords = ["tui", "llm", "ollama", "chat", "mcp"]
+categories = ["command-line-utilities"]
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(tarpaulin_include)'] }
