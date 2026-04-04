@@ -1,0 +1,4 @@
+/target
+.superpowers/
+docs/superpowers/
+.ollama-chat/
