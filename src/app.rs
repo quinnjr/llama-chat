@@ -107,15 +107,27 @@ impl App {
             .unwrap_or_default();
 
         let mut conversation = Vec::new();
-        let context_path = project_dir.join(".llama-chat/context.md");
-        if context_path.exists() {
-            if let Ok(ctx) = std::fs::read_to_string(&context_path) {
-                conversation.push(Message {
-                    role: "system".into(),
-                    content: Some(ctx),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+
+        // Load repository rules from standard files, in priority order.
+        // Each file's content is injected as a system message so the model
+        // follows the project's conventions.
+        let rule_files = [
+            project_dir.join("CLAUDE.md"),
+            project_dir.join("AGENTS.md"),
+            project_dir.join(".llama-chat/context.md"),
+        ];
+        for path in &rule_files {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if !content.trim().is_empty() {
+                        conversation.push(Message {
+                            role: "system".into(),
+                            content: Some(content),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                }
             }
         }
 
