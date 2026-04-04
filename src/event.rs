@@ -1,5 +1,10 @@
+use std::sync::Arc;
+
 use crossterm::event::KeyEvent;
+use tokio::sync::Mutex;
+
 use crate::api::client::StreamEvent;
+use crate::mcp::McpServer;
 
 pub enum AppEvent {
     Key(KeyEvent),
@@ -9,14 +14,14 @@ pub enum AppEvent {
         result: String,
         success: bool,
     },
-    McpReady {
+    McpConnected {
         server_name: String,
         tool_count: usize,
+        server: Arc<Mutex<McpServer>>,
     },
     McpError {
         server_name: String,
         error: String,
     },
     Error(String),
-    Tick,
 }

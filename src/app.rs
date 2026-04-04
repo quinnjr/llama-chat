@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::Result;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::api::client::{ApiClient, StreamEvent};
 use crate::api::types::*;
@@ -13,9 +17,6 @@ use crate::tools::permissions::PermissionManager;
 use crate::tools::shell::{self, ShellTool};
 use crate::tools::filesystem::{ReadFileTool, WriteFileTool, ListFilesTool};
 use crate::tools::{Tool, ToolRegistry};
-
-use std::collections::HashMap;
-use std::path::PathBuf;
 
 pub struct App {
     pub messages: Vec<ChatEntry>,
@@ -34,10 +35,13 @@ pub struct App {
     pub tool_registry: ToolRegistry,
     pub permissions: PermissionManager,
     pub skills: HashMap<String, Skill>,
-    pub mcp_servers: Vec<McpServer>,
+    pub mcp_servers: HashMap<String, Arc<Mutex<McpServer>>>,
+    pub mcp_tool_defs: Vec<ToolDefinition>,
+    pub mcp_tool_map: HashMap<String, (String, String)>,
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub assembling_tool_calls: HashMap<u32, ToolCall>,
+    #[allow(dead_code)]
     project_dir: PathBuf,
 }
 
@@ -123,7 +127,9 @@ impl App {
             tool_registry,
             permissions,
             skills,
-            mcp_servers: Vec::new(),
+            mcp_servers: HashMap::new(),
+            mcp_tool_defs: Vec::new(),
+            mcp_tool_map: HashMap::new(),
             event_tx,
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
@@ -206,8 +212,8 @@ impl App {
             }
             "/tools" => {
                 let mut lines = vec![format!("Built-in tools: {}", self.tool_registry.tool_count())];
-                for mcp in &self.mcp_servers {
-                    lines.push(format!("MCP '{}': {} tools", mcp.name, mcp.tools.len()));
+                if !self.mcp_tool_defs.is_empty() {
+                    lines.push(format!("MCP tools: {}", self.mcp_tool_defs.len()));
                 }
                 self.messages.push(ChatEntry::System(lines.join("\n")));
             }
@@ -251,9 +257,7 @@ impl App {
 
     fn start_streaming(&self) {
         let mut tool_defs = self.tool_registry.definitions();
-        for mcp in &self.mcp_servers {
-            tool_defs.extend(mcp.tool_definitions());
-        }
+        tool_defs.extend(self.mcp_tool_defs.clone());
 
         let request = ChatRequest {
             model: self.active_model.clone(),
@@ -407,11 +411,45 @@ impl App {
         let tx = self.event_tx.clone();
 
         if tool_name.starts_with("mcp_") {
-            let _ = tx.send(AppEvent::ToolResult {
-                tool_call_id: call_id,
-                result: "MCP tool execution not yet wired".into(),
-                success: false,
-            });
+            if let Some((server_name, real_tool_name)) = self.mcp_tool_map.get(&tool_name) {
+                if let Some(server) = self.mcp_servers.get(server_name) {
+                    let server = Arc::clone(server);
+                    let real_name = real_tool_name.clone();
+                    let args: serde_json::Value =
+                        serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
+                    tokio::spawn(async move {
+                        let mut server = server.lock().await;
+                        match server.call_tool(&real_name, args).await {
+                            Ok(output) => {
+                                let _ = tx.send(AppEvent::ToolResult {
+                                    tool_call_id: call_id,
+                                    result: output,
+                                    success: true,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::ToolResult {
+                                    tool_call_id: call_id,
+                                    result: e.to_string(),
+                                    success: false,
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    let _ = tx.send(AppEvent::ToolResult {
+                        tool_call_id: call_id,
+                        result: format!("MCP server not found for tool: {tool_name}"),
+                        success: false,
+                    });
+                }
+            } else {
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result: format!("Unknown MCP tool: {tool_name}"),
+                    success: false,
+                });
+            }
             return;
         }
 

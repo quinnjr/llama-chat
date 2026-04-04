@@ -45,10 +45,12 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             match mcp::McpServer::connect(name.clone(), &entry).await {
                 Ok(server) => {
-                    let count = server.tools.len();
-                    let _ = tx.send(AppEvent::McpReady {
+                    let tool_count = server.tools.len();
+                    let server = std::sync::Arc::new(tokio::sync::Mutex::new(server));
+                    let _ = tx.send(AppEvent::McpConnected {
                         server_name: name,
-                        tool_count: count,
+                        tool_count,
+                        server,
                     });
                 }
                 Err(e) => {
@@ -132,10 +134,34 @@ async fn main() -> Result<()> {
                 } => {
                     app.handle_tool_result(tool_call_id, result, success);
                 }
-                AppEvent::McpReady {
+                AppEvent::McpConnected {
                     server_name,
                     tool_count,
+                    server,
                 } => {
+                    {
+                        let srv = server.lock().await;
+                        for tool in &srv.tools {
+                            let full_name =
+                                format!("mcp_{}_{}", server_name, tool.name);
+                            app.mcp_tool_map.insert(
+                                full_name.clone(),
+                                (server_name.clone(), tool.name.clone()),
+                            );
+                            app.mcp_tool_defs.push(crate::api::types::ToolDefinition {
+                                tool_type: "function".into(),
+                                function: crate::api::types::FunctionDefinition {
+                                    name: full_name,
+                                    description: tool
+                                        .description
+                                        .clone()
+                                        .unwrap_or_default(),
+                                    parameters: tool.input_schema.clone(),
+                                },
+                            });
+                        }
+                    }
+                    app.mcp_servers.insert(server_name.clone(), server);
                     app.tool_count += tool_count;
                     app.messages.push(app::ChatEntry::System(format!(
                         "MCP '{server_name}' connected ({tool_count} tools)"
@@ -149,7 +175,6 @@ async fn main() -> Result<()> {
                 AppEvent::Error(e) => {
                     app.messages.push(app::ChatEntry::System(format!("Error: {e}")));
                 }
-                AppEvent::Tick => {}
             }
         }
 
