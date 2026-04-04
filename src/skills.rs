@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn project_skills_override_global() {
-        let dir = std::env::temp_dir().join("ollama-chat-test-skills");
+        let dir = std::env::temp_dir().join("llama-chat-test-skills");
         let global = dir.join("global");
         let project = dir.join("project");
         std::fs::create_dir_all(&global).unwrap();

@@ -98,13 +98,13 @@ impl App {
 
         let global_skills_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("ollama-chat/skills");
-        let project_skills_dir = project_dir.join(".ollama-chat/skills");
+            .join("llama-chat/skills");
+        let project_skills_dir = project_dir.join(".llama-chat/skills");
         let skills = skills::load_all_skills(&global_skills_dir, &project_skills_dir)
             .unwrap_or_default();
 
         let mut conversation = Vec::new();
-        let context_path = project_dir.join(".ollama-chat/context.md");
+        let context_path = project_dir.join(".llama-chat/context.md");
         if context_path.exists() {
             if let Ok(ctx) = std::fs::read_to_string(&context_path) {
                 conversation.push(Message {
@@ -288,6 +288,7 @@ impl App {
             messages: self.conversation.clone(),
             stream: true,
             tools: if tool_defs.is_empty() { None } else { Some(tool_defs) },
+            think: true,
         };
 
         let tx = self.event_tx.clone();

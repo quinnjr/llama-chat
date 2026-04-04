@@ -7,6 +7,9 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    /// Ollama-specific: enable thinking/reasoning mode for supported models
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub think: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -117,6 +120,7 @@ mod tests {
             }],
             stream: true,
             tools: None,
+            think: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_none());

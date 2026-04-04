@@ -9,7 +9,7 @@ use crate::config::theme::Theme;
 
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let left = Span::styled(
-        "ollama-chat",
+        "llama-chat",
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     );
 

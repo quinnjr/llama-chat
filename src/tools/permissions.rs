@@ -15,7 +15,7 @@ pub struct PermissionManager {
 
 impl PermissionManager {
     pub fn load(project_dir: &Path) -> Self {
-        let path = project_dir.join(".ollama-chat/permissions.json");
+        let path = project_dir.join(".llama-chat/permissions.json");
         let config = if path.exists() {
             std::fs::read_to_string(&path)
                 .ok()

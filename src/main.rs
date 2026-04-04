@@ -29,7 +29,7 @@ use crate::event::AppEvent;
 async fn main() -> Result<()> {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ollama-chat");
+        .join("llama-chat");
 
     let config = AppConfig::load(&config_dir.join("config.toml"))?;
     let mcp_config = McpConfig::load(&config_dir.join("mcp.json"))?;

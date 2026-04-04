@@ -72,7 +72,7 @@ impl McpTransport for StdioTransport {
         self.send_request("initialize", Some(serde_json::json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "ollama-chat", "version": "0.1.0" }
+            "clientInfo": { "name": "llama-chat", "version": "0.1.0" }
         }))).await?;
 
         Ok(())
