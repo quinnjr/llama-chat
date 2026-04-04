@@ -27,6 +27,8 @@ use crate::event::AppEvent;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let yolo = std::env::args().any(|a| a == "--yolo");
+
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
         .join("llama-chat");
@@ -37,6 +39,10 @@ async fn main() -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
     let mut app = App::new(config, mcp_config.clone(), event_tx.clone())?;
+
+    if yolo {
+        app.yolo = true;
+    }
 
     for (name, entry) in &mcp_config.mcp_servers {
         let name = name.clone();

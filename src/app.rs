@@ -28,6 +28,7 @@ pub struct App {
     pub tool_count: usize,
     pub pending_permission: Option<PendingPermission>,
     pub pattern_input: Option<String>,
+    pub yolo: bool,
     pub should_quit: bool,
 
     pub config: AppConfig,
@@ -128,6 +129,7 @@ impl App {
             tool_count,
             pending_permission: None,
             pattern_input: None,
+            yolo: false,
             should_quit: false,
             config,
             theme,
@@ -449,7 +451,7 @@ impl App {
             command_display.clone()
         };
 
-        if self.session_allow.contains(tool_name.as_str()) || self.permissions.is_allowed(&permission_key) {
+        if self.yolo || self.session_allow.contains(tool_name.as_str()) || self.permissions.is_allowed(&permission_key) {
             self.messages.push(ChatEntry::ToolCall {
                 name: tool_name.clone(),
                 command: command_display,
