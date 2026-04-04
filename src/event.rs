@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use crate::api::client::StreamEvent;
 use crate::mcp::McpServer;
 
+#[allow(dead_code)]
 pub enum AppEvent {
     Key(KeyEvent),
     Stream(StreamEvent),
@@ -13,6 +14,10 @@ pub enum AppEvent {
         tool_call_id: String,
         result: String,
         success: bool,
+    },
+    ToolOutputChunk {
+        tool_call_id: String,
+        chunk: String,
     },
     McpConnected {
         server_name: String,

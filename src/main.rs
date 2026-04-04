@@ -157,6 +157,9 @@ async fn main() -> Result<()> {
                 } => {
                     app.handle_tool_result(tool_call_id, result, success);
                 }
+                AppEvent::ToolOutputChunk { tool_call_id: _, chunk } => {
+                    app.tool_output_buffer.push_str(&chunk);
+                }
                 AppEvent::McpConnected {
                     server_name,
                     tool_count,

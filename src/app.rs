@@ -42,6 +42,7 @@ pub struct App {
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub assembling_tool_calls: HashMap<u32, ToolCall>,
+    pub tool_output_buffer: String,
     #[allow(dead_code)]
     project_dir: PathBuf,
 }
@@ -135,6 +136,7 @@ impl App {
             event_tx,
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
+            tool_output_buffer: String::new(),
             project_dir,
         })
     }
@@ -424,6 +426,7 @@ impl App {
         let call_id = tc.id.clone();
         let tx = self.event_tx.clone();
 
+        // MCP tools
         if tool_name.starts_with("mcp_") {
             if let Some((server_name, real_tool_name)) = self.mcp_tool_map.get(&tool_name) {
                 if let Some(server) = self.mcp_servers.get(server_name) {
@@ -467,9 +470,100 @@ impl App {
             return;
         }
 
+        // Shell tool: stream output line-by-line
+        if tool_name == "shell" {
+            let args: Result<serde_json::Value, _> = serde_json::from_str(&arguments);
+            let command = args.ok()
+                .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                .unwrap_or(arguments.clone());
+
+            let child = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn();
+
+            match child {
+                Ok(mut child) => {
+                    let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
+                    let tx_out = tx.clone();
+                    let tx_err = tx.clone();
+                    let cid_out = call_id.clone();
+                    let cid_err = call_id.clone();
+
+                    // Stream stdout lines
+                    if let Some(stdout) = stdout {
+                        let tx = tx_out;
+                        let cid = cid_out;
+                        tokio::spawn(async move {
+                            use tokio::io::AsyncBufReadExt;
+                            let mut reader = tokio::io::BufReader::new(stdout);
+                            let mut line = String::new();
+                            while let Ok(n) = reader.read_line(&mut line).await {
+                                if n == 0 { break; }
+                                let _ = tx.send(AppEvent::ToolOutputChunk {
+                                    tool_call_id: cid.clone(),
+                                    chunk: line.clone(),
+                                });
+                                line.clear();
+                            }
+                        });
+                    }
+
+                    // Stream stderr lines
+                    if let Some(stderr) = stderr {
+                        let tx = tx_err;
+                        let cid = cid_err;
+                        tokio::spawn(async move {
+                            use tokio::io::AsyncBufReadExt;
+                            let mut reader = tokio::io::BufReader::new(stderr);
+                            let mut line = String::new();
+                            while let Ok(n) = reader.read_line(&mut line).await {
+                                if n == 0 { break; }
+                                let _ = tx.send(AppEvent::ToolOutputChunk {
+                                    tool_call_id: cid.clone(),
+                                    chunk: format!("stderr: {}", line),
+                                });
+                                line.clear();
+                            }
+                        });
+                    }
+
+                    // Wait for process to finish, then send final ToolResult
+                    let tx_done = tx.clone();
+                    tokio::spawn(async move {
+                        let status = child.wait().await;
+                        let (success, code) = match &status {
+                            Ok(s) => (s.success(), s.code()),
+                            Err(_) => (false, None),
+                        };
+                        let _ = tx_done.send(AppEvent::ToolResult {
+                            tool_call_id: call_id,
+                            result: if success {
+                                "(command completed)".into()
+                            } else {
+                                format!("(command exited with {:?})", code)
+                            },
+                            success,
+                        });
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::ToolResult {
+                        tool_call_id: call_id,
+                        result: e.to_string(),
+                        success: false,
+                    });
+                }
+            }
+            return;
+        }
+
+        // Other built-in tools: non-streaming
         tokio::spawn(async move {
             let result = match tool_name.as_str() {
-                "shell" => ShellTool.execute(&arguments).await,
                 "read_file" => ReadFileTool.execute(&arguments).await,
                 "write_file" => WriteFileTool.execute(&arguments).await,
                 "list_files" => ListFilesTool.execute(&arguments).await,
@@ -495,12 +589,20 @@ impl App {
     }
 
     pub fn handle_tool_result(&mut self, tool_call_id: String, result: String, success: bool) {
-        let content = if success {
-            result
-        } else {
-            format!("Error: {}", result)
-        };
-        self.messages.push(ChatEntry::ToolOutput(content.clone()));
+        // Flush any streaming output
+        let mut full_output = std::mem::take(&mut self.tool_output_buffer);
+        if !full_output.is_empty() && result != "(command completed)" {
+            full_output.push('\n');
+            full_output.push_str(&result);
+        } else if full_output.is_empty() {
+            full_output = result.clone();
+        }
+
+        let display = if success { full_output.clone() } else { format!("Error: {}", full_output) };
+        self.messages.push(ChatEntry::ToolOutput(display));
+
+        // Send the full output to the model
+        let content = if success { full_output } else { format!("Error: {}", result) };
         self.conversation.push(Message {
             role: "tool".into(),
             content: Some(content),

@@ -68,6 +68,16 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         }
     }
 
+    // Streaming tool output (displayed before the command finishes)
+    if !app.tool_output_buffer.is_empty() {
+        for line in app.tool_output_buffer.lines() {
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(theme.muted),
+            )));
+        }
+    }
+
     if !app.streaming_buffer.is_empty() {
         lines.push(Line::from(vec![
             Span::styled(
