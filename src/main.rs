@@ -95,6 +95,26 @@ async fn main() -> Result<()> {
         }
     });
 
+    let health_tx = event_tx.clone();
+    let health_server = app.api_client.server().clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            let url = format!("{}/models", health_server.url);
+            let mut req = client.get(&url);
+            if let Some(ref key) = health_server.api_key {
+                req = req.bearer_auth(key);
+            }
+            let healthy = req
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success());
+            let _ = health_tx.send(AppEvent::HealthCheck(healthy));
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
     loop {
         terminal.draw(|f| {
             ui::draw(f, &app, &app.theme.clone());
