@@ -455,7 +455,7 @@ impl App {
         }
     }
 
-    pub fn handle_todo_complete(&mut self, arguments: &str) -> String {
+    pub fn handle_todo_complete(&mut self, arguments: &str) -> Result<String, String> {
         #[derive(serde::Deserialize)]
         struct CompleteArgs {
             index: usize,
@@ -464,12 +464,12 @@ impl App {
             Ok(args) => {
                 if let Some(item) = self.todo_items.get_mut(args.index) {
                     item.done = true;
-                    format!("Completed: {}", item.text)
+                    Ok(format!("Completed: {}", item.text))
                 } else {
-                    format!("Invalid todo index: {}", args.index)
+                    Err(format!("Invalid todo index: {}", args.index))
                 }
             }
-            Err(e) => format!("Invalid todo_complete arguments: {e}"),
+            Err(e) => Err(format!("Invalid todo_complete arguments: {e}")),
         }
     }
 
@@ -710,8 +710,10 @@ impl App {
                 return;
             }
             "todo_complete" => {
-                let result = self.handle_todo_complete(&arguments);
-                let success = !result.starts_with("Invalid");
+                let (result, success) = match self.handle_todo_complete(&arguments) {
+                    Ok(msg) => (msg, true),
+                    Err(msg) => (msg, false),
+                };
                 let _ = tx.send(AppEvent::ToolResult {
                     tool_call_id: call_id,
                     result,
@@ -2001,7 +2003,7 @@ mod app_tests {
         let result = app.handle_todo_complete(r#"{"index":1}"#);
         assert!(app.todo_items[1].done);
         assert!(!app.todo_items[0].done);
-        assert!(result.contains("Completed"));
+        assert!(result.unwrap().contains("Completed"));
     }
 
     #[test]
@@ -2009,7 +2011,22 @@ mod app_tests {
         let mut app = test_app();
         app.handle_todo_tool(r#"{"items":["a"]}"#);
         let result = app.handle_todo_complete(r#"{"index":5}"#);
-        assert!(result.contains("Invalid"));
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    #[test]
+    fn handle_todo_tool_invalid_json() {
+        let mut app = test_app();
+        let result = app.handle_todo_tool("not json");
+        assert!(result.contains("Invalid todo arguments"));
+        assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn handle_todo_complete_invalid_json() {
+        let mut app = test_app();
+        let result = app.handle_todo_complete(r#"{"index": "not a number"}"#);
+        assert!(result.unwrap_err().contains("Invalid todo_complete arguments"));
     }
 
     #[test]

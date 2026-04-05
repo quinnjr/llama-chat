@@ -3,6 +3,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
 use crate::config::theme::Theme;
@@ -27,15 +28,11 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 Style::default().fg(theme.fg)
             };
 
-            // Truncate text to fit sidebar (30 width - 2 border - 4 checkbox - 3 index)
+            // Truncate text by display width to fit sidebar
             let max_text = area.width.saturating_sub(2) as usize;
             let prefix = format!("{checkbox} {}. ", i);
             let available = max_text.saturating_sub(prefix.len());
-            let text = if item.text.len() > available && available > 3 {
-                format!("{}...", &item.text[..available - 3])
-            } else {
-                item.text.clone()
-            };
+            let text = truncate_to_width(&item.text, available);
 
             lines.push(Line::from(vec![
                 Span::styled(format!("{checkbox} "), style),
@@ -55,4 +52,34 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
+}
+
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if max_width <= 3 {
+        return s.chars().take(max_width).collect();
+    }
+    let mut width = 0;
+    let mut needs_truncation = false;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw > max_width {
+            needs_truncation = true;
+            break;
+        }
+        width += cw;
+    }
+    if !needs_truncation {
+        return s.to_string();
+    }
+    let mut truncated = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max_width - 3 {
+            break;
+        }
+        truncated.push(ch);
+        w += cw;
+    }
+    format!("{truncated}...")
 }

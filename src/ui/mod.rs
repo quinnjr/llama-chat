@@ -13,10 +13,16 @@ use crate::config::theme::Theme;
 
 #[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
+    // Horizontal split: main area | sidebar
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(30)])
+        .split(f.area());
+
     let input_height = if app.pending_permission.is_some() {
         3
     } else {
-        let total_width = f.area().width as usize;
+        let total_width = h_chunks[0].width as usize;
         let prompt_len = "▸ ".width() + app.input_buffer.width(); // display width
         let wrapped_lines = if total_width > 0 {
             prompt_len.div_ceil(total_width).max(1)
@@ -25,12 +31,6 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
         };
         (wrapped_lines as u16 + 1).max(2) // +1 for hints, at least 2
     };
-
-    // Horizontal split: main area | sidebar
-    let h_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(30)])
-        .split(f.area());
 
     // Vertical split for main area: header | chat | input
     let v_chunks = Layout::default()
