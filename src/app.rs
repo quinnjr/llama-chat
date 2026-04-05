@@ -54,6 +54,9 @@ pub struct App {
     pub todo_items: Vec<TodoItem>,
     pub server_healthy: Option<bool>,
     pub last_token_usage: Option<Usage>,
+    pub subagent_states: Vec<crate::subagent::SubagentState>,
+    pub subagents_pending: usize,
+    pub subagent_call_id: Option<String>,
     #[allow(dead_code)]
     project_dir: PathBuf,
 }
@@ -73,6 +76,10 @@ pub enum ChatEntry {
     },
     ToolOutput(String),
     System(String),
+    SubagentOutput {
+        index: usize,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +191,7 @@ impl App {
             mcp_servers: HashMap::new(),
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
-            session_allow: ["read_file", "write_file", "edit_file", "list_files", "todo", "todo_complete", "wipe_todo"]
+            session_allow: ["read_file", "write_file", "edit_file", "list_files", "todo", "todo_complete", "wipe_todo", "subagent"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -200,6 +207,9 @@ impl App {
             todo_items: Vec::new(),
             server_healthy: None,
             last_token_usage: None,
+            subagent_states: Vec::new(),
+            subagents_pending: 0,
+            subagent_call_id: None,
             project_dir,
         })
     }
@@ -2076,6 +2086,14 @@ mod app_tests {
         app.handle_todo_tool(r#"{"items":["a","b"]}"#);
         app.handle_wipe_todo();
         assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn subagent_state_defaults() {
+        let app = test_app();
+        assert!(app.subagent_states.is_empty());
+        assert_eq!(app.subagents_pending, 0);
+        assert!(app.subagent_call_id.is_none());
     }
 }
 

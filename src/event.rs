@@ -28,6 +28,16 @@ pub enum AppEvent {
         server_name: String,
         error: String,
     },
+    SubagentStream {
+        index: usize,
+        event: StreamEvent,
+    },
+    SubagentToolResult {
+        index: usize,
+        tool_call_id: String,
+        result: String,
+        success: bool,
+    },
     ModelsLoaded(Vec<String>),
     HealthCheck(bool),
     Resize,
