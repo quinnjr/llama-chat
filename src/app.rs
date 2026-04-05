@@ -435,6 +435,48 @@ impl App {
         ]
     }
 
+    pub fn handle_todo_tool(&mut self, arguments: &str) -> String {
+        #[derive(serde::Deserialize)]
+        struct TodoArgs {
+            items: Vec<String>,
+        }
+        match serde_json::from_str::<TodoArgs>(arguments) {
+            Ok(args) => {
+                let count = args.items.len();
+                self.todo_items = args
+                    .items
+                    .into_iter()
+                    .map(|text| TodoItem { text, done: false })
+                    .collect();
+                format!("Added {count} items")
+            }
+            Err(e) => format!("Invalid todo arguments: {e}"),
+        }
+    }
+
+    pub fn handle_todo_complete(&mut self, arguments: &str) -> String {
+        #[derive(serde::Deserialize)]
+        struct CompleteArgs {
+            index: usize,
+        }
+        match serde_json::from_str::<CompleteArgs>(arguments) {
+            Ok(args) => {
+                if let Some(item) = self.todo_items.get_mut(args.index) {
+                    item.done = true;
+                    format!("Completed: {}", item.text)
+                } else {
+                    format!("Invalid todo index: {}", args.index)
+                }
+            }
+            Err(e) => format!("Invalid todo_complete arguments: {e}"),
+        }
+    }
+
+    pub fn handle_wipe_todo(&mut self) -> String {
+        self.todo_items.clear();
+        "Todo list cleared".into()
+    }
+
     #[cfg(not(tarpaulin_include))]
     fn start_streaming(&mut self) {
         self.waiting_for_response = true;
@@ -654,6 +696,39 @@ impl App {
         let arguments = tc.function.arguments.clone();
         let call_id = tc.id.clone();
         let tx = self.event_tx.clone();
+
+        // Todo tools: inline state mutation, no async needed
+        match tool_name.as_str() {
+            "todo" => {
+                let result = self.handle_todo_tool(&arguments);
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "todo_complete" => {
+                let result = self.handle_todo_complete(&arguments);
+                let success = !result.starts_with("Invalid");
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success,
+                });
+                return;
+            }
+            "wipe_todo" => {
+                let result = self.handle_wipe_todo();
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            _ => {}
+        }
 
         // MCP tools
         if tool_name.starts_with("mcp_") {
@@ -1896,6 +1971,52 @@ mod app_tests {
         assert!(names.contains(&"todo_complete"));
         assert!(names.contains(&"wipe_todo"));
         assert_eq!(defs.len(), 3);
+    }
+
+    #[test]
+    fn handle_todo_tool_sets_items() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["first","second","third"]}"#);
+        assert_eq!(app.todo_items.len(), 3);
+        assert_eq!(app.todo_items[0].text, "first");
+        assert_eq!(app.todo_items[1].text, "second");
+        assert_eq!(app.todo_items[2].text, "third");
+        assert!(app.todo_items.iter().all(|t| !t.done));
+    }
+
+    #[test]
+    fn handle_todo_tool_replaces_existing() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["old"]}"#);
+        app.handle_todo_tool(r#"{"items":["new1","new2"]}"#);
+        assert_eq!(app.todo_items.len(), 2);
+        assert_eq!(app.todo_items[0].text, "new1");
+    }
+
+    #[test]
+    fn handle_todo_complete_marks_done() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a","b","c"]}"#);
+        let result = app.handle_todo_complete(r#"{"index":1}"#);
+        assert!(app.todo_items[1].done);
+        assert!(!app.todo_items[0].done);
+        assert!(result.contains("Completed"));
+    }
+
+    #[test]
+    fn handle_todo_complete_out_of_bounds() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a"]}"#);
+        let result = app.handle_todo_complete(r#"{"index":5}"#);
+        assert!(result.contains("Invalid"));
+    }
+
+    #[test]
+    fn handle_wipe_todo_clears_list() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a","b"]}"#);
+        app.handle_wipe_todo();
+        assert!(app.todo_items.is_empty());
     }
 }
 
