@@ -273,6 +273,7 @@ impl App {
                     if let Some(server) = self.config.servers.get(name) {
                         self.api_client.set_server(server.clone());
                         self.active_server_name = server.name.clone();
+                        self.server_healthy = None;
                         self.messages.push(ChatEntry::System(format!(
                             "Switched to server: {}",
                             server.name
@@ -1276,6 +1277,14 @@ mod app_tests {
         let mut app = test_app();
         app.handle_slash_command("/server");
         assert!(matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Servers:")));
+    }
+
+    #[test]
+    fn server_switch_resets_health() {
+        let mut app = test_app();
+        app.server_healthy = Some(true);
+        app.handle_slash_command("/server local");
+        assert!(app.server_healthy.is_none());
     }
 
     #[test]
