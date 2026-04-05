@@ -52,6 +52,8 @@ pub struct App {
     pub abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
     pub anim_frame: u8,
     pub todo_items: Vec<TodoItem>,
+    pub server_healthy: Option<bool>,
+    pub last_token_usage: Option<Usage>,
     #[allow(dead_code)]
     project_dir: PathBuf,
 }
@@ -196,6 +198,8 @@ impl App {
             abort_handle: None,
             anim_frame: 0,
             todo_items: Vec::new(),
+            server_healthy: None,
+            last_token_usage: None,
             project_dir,
         })
     }
@@ -481,6 +485,7 @@ impl App {
     #[cfg(not(tarpaulin_include))]
     fn start_streaming(&mut self) {
         self.waiting_for_response = true;
+        self.last_token_usage = None;
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
         tool_defs.extend(self.todo_tool_definitions());
@@ -548,7 +553,9 @@ impl App {
                     }
                 }
             }
-            StreamEvent::Usage(_) => {}
+            StreamEvent::Usage(usage) => {
+                self.last_token_usage = Some(usage);
+            }
             StreamEvent::Done => {
                 self.finalize_response();
             }
@@ -1364,6 +1371,30 @@ mod app_tests {
         assert!(
             matches!(&app.messages.last().unwrap(), ChatEntry::System(s) if s.contains("activated"))
         );
+    }
+
+    // --- server_healthy and last_token_usage defaults ---
+
+    #[test]
+    fn app_new_health_and_usage_defaults() {
+        let app = test_app();
+        assert!(app.server_healthy.is_none());
+        assert!(app.last_token_usage.is_none());
+    }
+
+    #[test]
+    fn handle_stream_usage_sets_last_token_usage() {
+        let mut app = test_app();
+        let usage = crate::api::types::Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        app.handle_stream_event(StreamEvent::Usage(usage));
+        let u = app.last_token_usage.as_ref().unwrap();
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.completion_tokens, 50);
+        assert_eq!(u.total_tokens, 150);
     }
 
     // --- handle_stream_event ---

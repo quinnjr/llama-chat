@@ -79,10 +79,18 @@ async fn main() -> Result<()> {
     let input_tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
-                && let Ok(Event::Key(key)) = ct_event::read()
-            {
-                let _ = input_tx.send(AppEvent::Key(key));
+            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(event) = ct_event::read() {
+                    match event {
+                        Event::Key(key) => {
+                            let _ = input_tx.send(AppEvent::Key(key));
+                        }
+                        Event::Resize(_, _) => {
+                            let _ = input_tx.send(AppEvent::Resize);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     });
@@ -91,6 +99,8 @@ async fn main() -> Result<()> {
         terminal.draw(|f| {
             ui::draw(f, &app, &app.theme.clone());
         })?;
+
+        app.anim_frame = app.anim_frame.wrapping_add(1);
 
         if let Some(event) = event_rx.recv().await {
             match event {
@@ -134,7 +144,25 @@ async fn main() -> Result<()> {
                     } else {
                         match key.code {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                app.should_quit = true;
+                                if app.waiting_for_response {
+                                    app.abort_streaming();
+                                } else {
+                                    app.should_quit = true;
+                                }
+                            }
+                            KeyCode::Char(c @ ('t' | 'T')) => {
+                                if app.waiting_for_response {
+                                    app.toggle_thinking();
+                                } else {
+                                    app.input_buffer.push(c);
+                                }
+                            }
+                            KeyCode::Char(' ') => {
+                                if app.waiting_for_response {
+                                    app.abort_streaming();
+                                } else {
+                                    app.input_buffer.push(' ');
+                                }
                             }
                             KeyCode::Enter => {
                                 app.submit_message();
@@ -202,6 +230,9 @@ async fn main() -> Result<()> {
                         "MCP '{server_name}' failed: {error}"
                     )));
                 }
+                AppEvent::Resize => {
+                    // Redraw with new dimensions happens at top of loop
+                }
                 AppEvent::ModelsLoaded(models) => {
                     if models.is_empty() {
                         app.messages.push(app::ChatEntry::System(
@@ -214,6 +245,9 @@ async fn main() -> Result<()> {
                             list.join("\n")
                         )));
                     }
+                }
+                AppEvent::HealthCheck(healthy) => {
+                    app.server_healthy = Some(healthy);
                 }
                 AppEvent::Error(e) => {
                     app.messages

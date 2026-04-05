@@ -29,5 +29,7 @@ pub enum AppEvent {
         error: String,
     },
     ModelsLoaded(Vec<String>),
+    HealthCheck(bool),
+    Resize,
     Error(String),
 }
