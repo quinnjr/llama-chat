@@ -93,6 +93,9 @@ impl ApiClient {
                             done_sent = true;
                         }
                     }
+                    if let Some(usage) = resp.usage {
+                        let _ = tx.send(StreamEvent::Usage(usage));
+                    }
                 }
             }
         }
@@ -109,6 +112,7 @@ impl ApiClient {
 pub enum StreamEvent {
     Token(String),
     ToolCallDelta(DeltaToolCall),
+    Usage(crate::api::types::Usage),
     Done,
 }
 

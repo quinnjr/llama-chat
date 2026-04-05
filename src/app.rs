@@ -548,6 +548,7 @@ impl App {
                     }
                 }
             }
+            StreamEvent::Usage(_) => {}
             StreamEvent::Done => {
                 self.finalize_response();
             }
