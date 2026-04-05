@@ -274,8 +274,16 @@ async fn main() -> Result<()> {
                     app.messages
                         .push(app::ChatEntry::System(format!("Error: {e}")));
                 }
-                AppEvent::SubagentStream { .. } | AppEvent::SubagentToolResult { .. } => {
-                    // Subagent dispatch not yet wired — handled in a later task.
+                AppEvent::SubagentStream { index, event } => {
+                    app.handle_subagent_stream(index, event);
+                }
+                AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id,
+                    result,
+                    success,
+                } => {
+                    app.handle_subagent_tool_result(index, tool_call_id, result, success);
                 }
             }
         }
