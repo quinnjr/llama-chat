@@ -149,8 +149,16 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 }
                 lines.push(Line::raw(""));
             }
-            ChatEntry::SubagentOutput { .. } => {
-                // Subagent rendering not yet implemented — handled in a later task.
+            ChatEntry::SubagentOutput { index, text } => {
+                for line in text.lines() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("[agent-{index}] "),
+                            Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(line, Style::default().fg(theme.fg)),
+                    ]));
+                }
             }
         }
     }
