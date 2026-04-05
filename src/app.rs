@@ -122,7 +122,7 @@ impl App {
         tool_registry.register(Box::new(WriteFileTool));
         tool_registry.register(Box::new(EditFileTool));
         tool_registry.register(Box::new(ListFilesTool));
-        let tool_count = tool_registry.tool_count() + 3; // +3 for todo tools
+        let tool_count = tool_registry.tool_count() + 4; // +3 todo + 1 subagent
 
         let permissions = PermissionManager::load(&project_dir);
 
@@ -500,6 +500,7 @@ impl App {
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
         tool_defs.extend(self.todo_tool_definitions());
+        tool_defs.push(crate::subagent::tool_definition());
 
         let request = ChatRequest {
             model: self.active_model.clone(),
@@ -747,6 +748,68 @@ impl App {
                     result,
                     success: true,
                 });
+                return;
+            }
+            "subagent" => {
+                match crate::subagent::parse_args(&arguments) {
+                    Ok(args) => {
+                        self.subagent_call_id = Some(call_id);
+                        self.subagents_pending = args.agents.len();
+                        self.subagent_states = args.agents.iter().enumerate().map(|(i, spec)| {
+                            crate::subagent::SubagentState::new(i, spec.system.as_deref(), &spec.prompt)
+                        }).collect();
+
+                        let mut tool_defs = self.tool_registry.definitions();
+                        tool_defs.extend(self.mcp_tool_defs.clone());
+                        tool_defs.extend(self.todo_tool_definitions());
+                        tool_defs.push(crate::subagent::tool_definition());
+
+                        for state in &self.subagent_states {
+                            let index = state.index;
+                            let request = ChatRequest {
+                                model: self.active_model.clone(),
+                                messages: state.conversation.clone(),
+                                stream: true,
+                                tools: if tool_defs.is_empty() { None } else { Some(tool_defs.clone()) },
+                                think: true,
+                            };
+                            let tx = self.event_tx.clone();
+                            let server = self.api_client.server().clone();
+                            tokio::spawn(async move {
+                                let client = ApiClient::new(server);
+                                let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+                                let tx2 = tx.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = client.chat_stream(request, stream_tx).await {
+                                        let _ = tx2.send(AppEvent::Error(format!("[agent-{index}] {e}")));
+                                    }
+                                });
+                                while let Some(event) = stream_rx.recv().await {
+                                    let _ = tx.send(AppEvent::SubagentStream { index, event });
+                                }
+                            });
+                        }
+
+                        for state in &self.subagent_states {
+                            let prompt_preview = state
+                                .conversation
+                                .last()
+                                .and_then(|m| m.content.as_deref())
+                                .unwrap_or("");
+                            self.messages.push(ChatEntry::SubagentOutput {
+                                index: state.index,
+                                text: format!("Started ({})", prompt_preview),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::ToolResult {
+                            tool_call_id: call_id,
+                            result: e,
+                            success: false,
+                        });
+                    }
+                }
                 return;
             }
             _ => {}
@@ -1992,7 +2055,7 @@ mod app_tests {
         assert!(app.streaming_buffer.is_empty());
         assert_eq!(app.active_model, "llama3:8b");
         assert_eq!(app.active_server_name, "Local Ollama");
-        assert_eq!(app.tool_count, 8); // 5 built-in + 3 todo
+        assert_eq!(app.tool_count, 9); // 5 built-in + 3 todo + 1 subagent
         assert!(!app.should_quit);
         assert!(!app.yolo);
         assert!(app.pending_permission.is_none());
