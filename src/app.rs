@@ -1023,6 +1023,95 @@ impl App {
         self.process_next_tool_call();
     }
 
+    pub fn handle_subagent_stream(&mut self, index: usize, event: StreamEvent) {
+        if index >= self.subagent_states.len() || self.subagent_states[index].done {
+            return;
+        }
+        match event {
+            StreamEvent::Token(text) => {
+                self.subagent_states[index].streaming_buffer.push_str(&text);
+                self.messages.push(ChatEntry::SubagentOutput { index, text });
+            }
+            StreamEvent::ToolCallDelta(delta) => {
+                let state = &mut self.subagent_states[index];
+                let entry = state.assembling_tool_calls
+                    .entry(delta.index)
+                    .or_insert_with(|| ToolCall {
+                        id: String::new(),
+                        call_type: "function".into(),
+                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                    });
+                if let Some(id) = delta.id { entry.id = id; }
+                if let Some(ref fc) = delta.function {
+                    if let Some(ref name) = fc.name { entry.function.name.push_str(name); }
+                    if let Some(ref args) = fc.arguments { entry.function.arguments.push_str(args); }
+                }
+            }
+            StreamEvent::Usage(_) => {}
+            StreamEvent::Done => {
+                self.finalize_subagent(index);
+            }
+        }
+    }
+
+    fn finalize_subagent(&mut self, index: usize) {
+        let state = &mut self.subagent_states[index];
+        if !state.streaming_buffer.is_empty() {
+            let text = std::mem::take(&mut state.streaming_buffer);
+            state.result_parts.push(text.clone());
+            state.conversation.push(Message {
+                role: "assistant".into(),
+                content: Some(text),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        if !state.assembling_tool_calls.is_empty() {
+            let mut calls: Vec<(u32, ToolCall)> = state.assembling_tool_calls.drain().collect();
+            calls.sort_by_key(|(idx, _)| *idx);
+            let tool_calls: Vec<ToolCall> = calls.into_iter().map(|(_, tc)| tc).collect();
+            state.conversation.push(Message {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(tool_calls.clone()),
+                tool_call_id: None,
+            });
+            state.pending_tool_calls = tool_calls;
+            self.process_subagent_tool_call(index);
+        } else {
+            self.subagent_states[index].done = true;
+            self.subagents_pending = self.subagents_pending.saturating_sub(1);
+            self.check_all_subagents_done();
+        }
+    }
+
+    fn check_all_subagents_done(&mut self) {
+        if self.subagents_pending > 0 { return; }
+        let mut combined = String::new();
+        for state in &self.subagent_states {
+            combined.push_str(&format!("[agent-{} result]\n", state.index));
+            combined.push_str(&state.result_parts.join("\n"));
+            combined.push_str("\n\n");
+        }
+        let combined = combined.trim().to_string();
+        if let Some(call_id) = self.subagent_call_id.take() {
+            let _ = self.event_tx.send(AppEvent::ToolResult {
+                tool_call_id: call_id,
+                result: combined,
+                success: true,
+            });
+        }
+        // States remain accessible until the next subagent dispatch overwrites
+        // them; cleared in execute_tool_call when a new subagent invocation
+        // begins so that concurrent test assertions can still read done flags.
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn process_subagent_tool_call(&mut self, _index: usize) {
+        // Implemented in Task 5
+    }
+
     pub fn handle_pattern_submit(&mut self) {
         if let Some(pattern) = self.pattern_input.take() {
             if !pattern.is_empty() {
@@ -2157,6 +2246,39 @@ mod app_tests {
         assert!(app.subagent_states.is_empty());
         assert_eq!(app.subagents_pending, 0);
         assert!(app.subagent_call_id.is_none());
+    }
+
+    #[test]
+    fn handle_subagent_token_appends_to_buffer() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
+        assert_eq!(app.subagent_states[0].streaming_buffer, "hello");
+    }
+
+    #[test]
+    fn handle_subagent_token_adds_chat_entry() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
+        assert!(matches!(
+            app.messages.last(),
+            Some(ChatEntry::SubagentOutput { index: 0, text }) if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn subagent_done_without_tools_marks_complete() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.subagent_call_id = Some("call_1".into());
+        app.subagent_states[0].streaming_buffer = "result text".into();
+        app.handle_subagent_stream(0, StreamEvent::Done);
+        assert!(app.subagent_states[0].done);
+        assert_eq!(app.subagents_pending, 0);
     }
 }
 
