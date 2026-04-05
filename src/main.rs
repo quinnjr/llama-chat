@@ -4,6 +4,7 @@ mod config;
 mod event;
 mod mcp;
 mod skills;
+mod subagent;
 mod tools;
 mod ui;
 
@@ -272,6 +273,9 @@ async fn main() -> Result<()> {
                 AppEvent::Error(e) => {
                     app.messages
                         .push(app::ChatEntry::System(format!("Error: {e}")));
+                }
+                AppEvent::SubagentStream { .. } | AppEvent::SubagentToolResult { .. } => {
+                    // Subagent dispatch not yet wired — handled in a later task.
                 }
             }
         }
