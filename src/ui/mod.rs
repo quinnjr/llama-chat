@@ -26,21 +26,30 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
         (wrapped_lines as u16 + 1).max(2) // +1 for hints, at least 2
     };
 
-    let chunks = Layout::default()
+    // Horizontal split: main area | sidebar
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(30)])
+        .split(f.area());
+
+    // Vertical split for main area: header | chat | input
+    let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(input_height),
         ])
-        .split(f.area());
+        .split(h_chunks[0]);
 
-    header::draw(f, app, theme, chunks[0]);
-    chat::draw(f, app, theme, chunks[1]);
+    header::draw(f, app, theme, v_chunks[0]);
+    chat::draw(f, app, theme, v_chunks[1]);
 
     if app.pending_permission.is_some() {
-        prompt::draw(f, app, theme, chunks[2]);
+        prompt::draw(f, app, theme, v_chunks[2]);
     } else {
-        input::draw(f, app, theme, chunks[2]);
+        input::draw(f, app, theme, v_chunks[2]);
     }
+
+    sidebar::draw(f, app, theme, h_chunks[1]);
 }
