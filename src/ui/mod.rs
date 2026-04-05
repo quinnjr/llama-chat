@@ -36,7 +36,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(4),
             Constraint::Min(1),
             Constraint::Length(input_height),
         ])
