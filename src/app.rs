@@ -30,6 +30,7 @@ pub struct App {
     pub pattern_input: Option<String>,
     pub yolo: bool,
     pub should_quit: bool,
+    pub show_thinking: bool,
 
     pub config: AppConfig,
     pub theme: Theme,
@@ -47,6 +48,10 @@ pub struct App {
     pub tool_output_buffer: String,
     pub thinking_buffer: String,
     pub in_thinking: bool,
+    pub waiting_for_response: bool,
+    pub abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
+    pub anim_frame: u8,
+    pub todo_items: Vec<TodoItem>,
     #[allow(dead_code)]
     project_dir: PathBuf,
 }
@@ -55,7 +60,10 @@ pub struct App {
 pub enum ChatEntry {
     User(String),
     Assistant(String),
-    Thinking(String),
+    Thinking {
+        content: String,
+        collapsed: bool,
+    },
     ToolCall {
         name: String,
         command: String,
@@ -71,6 +79,12 @@ pub struct PendingPermission {
     pub command: String,
     pub tool_call_id: String,
     pub arguments: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoItem {
+    pub text: String,
+    pub done: bool,
 }
 
 impl App {
@@ -158,6 +172,7 @@ impl App {
             pattern_input: None,
             yolo: false,
             should_quit: false,
+            show_thinking: config.defaults.show_thinking,
             config,
             theme,
             api_client,
@@ -177,6 +192,10 @@ impl App {
             tool_output_buffer: String::new(),
             thinking_buffer: String::new(),
             in_thinking: false,
+            waiting_for_response: false,
+            abort_handle: None,
+            anim_frame: 0,
+            todo_items: Vec::new(),
             project_dir,
         })
     }
@@ -304,7 +323,6 @@ impl App {
                         "AGENTS.md already exists. Edit it directly to update.".into(),
                     ));
                 } else {
-                    // Ask the model to generate AGENTS.md by examining the project
                     self.messages.push(ChatEntry::System(
                         "Generating AGENTS.md for this project...".into(),
                     ));
@@ -318,9 +336,16 @@ impl App {
                     self.start_streaming();
                 }
             }
+            "/thinking" => {
+                self.show_thinking = !self.show_thinking;
+                let status = if self.show_thinking { "visible" } else { "hidden" };
+                self.messages.push(ChatEntry::System(format!(
+                    "Thinking display: {status}"
+                )));
+            }
             "/help" => {
                 self.messages.push(ChatEntry::System(
-                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /exit          — quit".into()
+                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /thinking      — toggle thinking display\n  /exit          — quit\n\nKeybindings:\n  Ctrl+C          — stop generating\n  t               — toggle thinking".into()
                 ));
             }
             other => {
@@ -344,8 +369,24 @@ impl App {
         }
     }
 
+    pub fn toggle_thinking(&mut self) {
+        self.show_thinking = !self.show_thinking;
+    }
+
+    pub fn abort_streaming(&mut self) {
+        if let Some(tx) = self.abort_handle.take() {
+            let _ = tx.send(());
+        }
+        self.waiting_for_response = false;
+        if !self.streaming_buffer.is_empty() {
+            self.finalize_response();
+        }
+        self.messages.push(ChatEntry::System("Generation stopped.".into()));
+    }
+
     #[cfg(not(tarpaulin_include))]
-    fn start_streaming(&self) {
+    fn start_streaming(&mut self) {
+        self.waiting_for_response = true;
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
 
@@ -384,9 +425,11 @@ impl App {
     pub fn handle_stream_event(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::Token(text) => {
+                self.waiting_for_response = false;
                 self.streaming_buffer.push_str(&text);
             }
             StreamEvent::ToolCallDelta(delta) => {
+                self.waiting_for_response = false;
                 let entry = self
                     .assembling_tool_calls
                     .entry(delta.index)
@@ -417,6 +460,7 @@ impl App {
     }
 
     fn finalize_response(&mut self) {
+        self.waiting_for_response = false;
         // Reset thinking state in case stream ended mid-think
         self.in_thinking = false;
         self.thinking_buffer.clear();
@@ -442,14 +486,20 @@ impl App {
                         let thinking = &remaining[..think_end];
                         if !thinking.trim().is_empty() {
                             self.messages
-                                .push(ChatEntry::Thinking(thinking.trim().to_string()));
+                                .push(ChatEntry::Thinking {
+                                    content: thinking.trim().to_string(),
+                                    collapsed: false,
+                                });
                         }
                         remaining = &remaining[think_end + "</think>".len()..];
                     } else {
                         // Unclosed think tag — treat rest as thinking
                         if !remaining.trim().is_empty() {
                             self.messages
-                                .push(ChatEntry::Thinking(remaining.trim().to_string()));
+                                .push(ChatEntry::Thinking {
+                                    content: remaining.trim().to_string(),
+                                    collapsed: false,
+                                });
                         }
                         remaining = "";
                     }
@@ -622,7 +672,7 @@ impl App {
                     let cid_err = call_id.clone();
 
                     // Stream stdout lines
-                    if let Some(stdout) = stdout {
+                    let stdout_handle = stdout.map(|stdout| {
                         let tx = tx_out;
                         let cid = cid_out;
                         tokio::spawn(async move {
@@ -639,11 +689,11 @@ impl App {
                                 });
                                 line.clear();
                             }
-                        });
-                    }
+                        })
+                    });
 
                     // Stream stderr lines
-                    if let Some(stderr) = stderr {
+                    let stderr_handle = stderr.map(|stderr| {
                         let tx = tx_err;
                         let cid = cid_err;
                         tokio::spawn(async move {
@@ -660,13 +710,21 @@ impl App {
                                 });
                                 line.clear();
                             }
-                        });
-                    }
+                        })
+                    });
 
-                    // Wait for process to finish, then send final ToolResult
+                    // Wait for process exit, then drain readers before
+                    // sending ToolResult so all output chunks are queued
+                    // in the channel ahead of the result event.
                     let tx_done = tx.clone();
                     tokio::spawn(async move {
                         let status = child.wait().await;
+                        if let Some(h) = stdout_handle {
+                            let _ = h.await;
+                        }
+                        if let Some(h) = stderr_handle {
+                            let _ = h.await;
+                        }
                         let (success, code) = match &status {
                             Ok(s) => (s.success(), s.code()),
                             Err(_) => (false, None),
@@ -1189,6 +1247,40 @@ mod app_tests {
     }
 
     #[test]
+    fn waiting_for_response_cleared_by_token() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        app.handle_stream_event(StreamEvent::Token("hi".into()));
+        assert!(!app.waiting_for_response);
+    }
+
+    #[test]
+    fn waiting_for_response_cleared_by_tool_call_delta() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        let delta = DeltaToolCall {
+            index: 0,
+            id: Some("call_1".into()),
+            call_type: Some("function".into()),
+            function: Some(DeltaFunctionCall {
+                name: Some("shell".into()),
+                arguments: Some("{}".into()),
+            }),
+        };
+        app.handle_stream_event(StreamEvent::ToolCallDelta(delta));
+        assert!(!app.waiting_for_response);
+    }
+
+    #[test]
+    fn waiting_for_response_cleared_by_finalize() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        app.streaming_buffer = "answer".into();
+        app.handle_stream_event(StreamEvent::Done);
+        assert!(!app.waiting_for_response);
+    }
+
+    #[test]
     fn stream_event_tool_call_delta_assembles() {
         let mut app = test_app();
         let delta = DeltaToolCall {
@@ -1245,8 +1337,8 @@ mod app_tests {
         let mut has_assistant = false;
         for entry in &app.messages {
             match entry {
-                ChatEntry::Thinking(s) => {
-                    assert_eq!(s, "Let me reason about this.");
+                ChatEntry::Thinking { content, .. } => {
+                    assert_eq!(content, "Let me reason about this.");
                     has_thinking = true;
                 }
                 ChatEntry::Assistant(s) => {
@@ -1266,7 +1358,7 @@ mod app_tests {
         app.streaming_buffer = "<think>Still thinking...".into();
         app.finalize_response();
 
-        assert!(matches!(&app.messages[0], ChatEntry::Thinking(s) if s == "Still thinking..."));
+        assert!(matches!(&app.messages[0], ChatEntry::Thinking { content, .. } if content == "Still thinking..."));
     }
 
     #[test]
@@ -1287,7 +1379,7 @@ mod app_tests {
 
         // Whitespace-only thinking should not produce a Thinking entry
         for entry in &app.messages {
-            assert!(!matches!(entry, ChatEntry::Thinking(_)));
+            assert!(!matches!(entry, ChatEntry::Thinking { .. }));
         }
         assert!(
             matches!(app.messages.last(), Some(ChatEntry::Assistant(s)) if s == "Actual answer.")
@@ -1304,7 +1396,7 @@ mod app_tests {
         let mut found_assistant = false;
         for entry in &app.messages {
             match entry {
-                ChatEntry::Thinking(s) if s == "reasoning" => found_thinking = true,
+                ChatEntry::Thinking { content, .. } if content == "reasoning" => found_thinking = true,
                 ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => {
                     found_assistant = true
                 }
@@ -1735,6 +1827,12 @@ mod app_tests {
         assert!(app.session_allow.contains("edit_file"));
         assert!(app.session_allow.contains("list_files"));
         assert!(!app.session_allow.contains("shell"));
+    }
+
+    #[test]
+    fn todo_items_start_empty() {
+        let app = test_app();
+        assert!(app.todo_items.is_empty());
     }
 }
 
