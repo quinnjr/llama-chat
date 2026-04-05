@@ -2,21 +2,36 @@ pub mod chat;
 pub mod header;
 pub mod input;
 pub mod prompt;
+pub mod sidebar;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::config::theme::Theme;
 
 #[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme) {
+    let input_height = if app.pending_permission.is_some() {
+        3
+    } else {
+        let total_width = f.area().width as usize;
+        let prompt_len = "▸ ".width() + app.input_buffer.width(); // display width
+        let wrapped_lines = if total_width > 0 {
+            prompt_len.div_ceil(total_width).max(1)
+        } else {
+            1
+        };
+        (wrapped_lines as u16 + 1).max(2) // +1 for hints, at least 2
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
         ])
         .split(f.area());
 
