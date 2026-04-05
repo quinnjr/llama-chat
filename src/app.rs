@@ -182,7 +182,7 @@ impl App {
             mcp_servers: HashMap::new(),
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
-            session_allow: ["read_file", "write_file", "edit_file", "list_files"]
+            session_allow: ["read_file", "write_file", "edit_file", "list_files", "todo", "todo_complete", "wipe_todo"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -384,11 +384,63 @@ impl App {
         self.messages.push(ChatEntry::System("Generation stopped.".into()));
     }
 
+    pub fn todo_tool_definitions(&self) -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "todo".into(),
+                    description: "Create a todo list for tracking task progress. Replaces any existing list.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "List of todo item descriptions"
+                            }
+                        },
+                        "required": ["items"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "todo_complete".into(),
+                    description: "Mark a todo item as completed by its zero-based index.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "index": {
+                                "type": "integer",
+                                "description": "Zero-based index of the todo item to mark complete"
+                            }
+                        },
+                        "required": ["index"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "wipe_todo".into(),
+                    description: "Clear the entire todo list to start fresh.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {}
+                    }),
+                },
+            },
+        ]
+    }
+
     #[cfg(not(tarpaulin_include))]
     fn start_streaming(&mut self) {
         self.waiting_for_response = true;
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
+        tool_defs.extend(self.todo_tool_definitions());
 
         let request = ChatRequest {
             model: self.active_model.clone(),
@@ -1833,6 +1885,17 @@ mod app_tests {
     fn todo_items_start_empty() {
         let app = test_app();
         assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn todo_tool_definitions_are_present() {
+        let app = test_app();
+        let defs = app.todo_tool_definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+        assert!(names.contains(&"todo"));
+        assert!(names.contains(&"todo_complete"));
+        assert!(names.contains(&"wipe_todo"));
+        assert_eq!(defs.len(), 3);
     }
 }
 
