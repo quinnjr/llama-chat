@@ -1108,8 +1108,236 @@ impl App {
     }
 
     #[cfg(not(tarpaulin_include))]
-    fn process_subagent_tool_call(&mut self, _index: usize) {
-        // Implemented in Task 5
+    fn process_subagent_tool_call(&mut self, index: usize) {
+        let state = &mut self.subagent_states[index];
+        let tc = match state.pending_tool_calls.first() {
+            Some(tc) => tc.clone(),
+            None => {
+                // No more tool calls — continue streaming
+                self.start_subagent_streaming(index);
+                return;
+            }
+        };
+
+        let tool_name = &tc.function.name;
+        let command_display = if tool_name == "shell" {
+            shell::extract_command(&tc.function.arguments)
+                .unwrap_or_else(|| tc.function.arguments.clone())
+        } else {
+            format!("{} {}", tool_name, tc.function.arguments)
+        };
+
+        let permission_key = if tool_name == "shell" {
+            shell::extract_command(&tc.function.arguments)
+                .unwrap_or_else(|| tc.function.arguments.clone())
+        } else {
+            command_display.clone()
+        };
+
+        self.messages.push(ChatEntry::SubagentOutput {
+            index,
+            text: format!("⚙ {} {}", tool_name, command_display),
+        });
+
+        if self.yolo
+            || self.session_allow.contains(tool_name.as_str())
+            || self.permissions.is_allowed(&permission_key)
+        {
+            self.execute_subagent_tool_call(index, tc);
+        } else {
+            self.messages.push(ChatEntry::ToolCall {
+                name: format!("[agent-{}] {}", index, tool_name),
+                command: command_display.clone(),
+                status: "pending".into(),
+            });
+            self.pending_permission = Some(PendingPermission {
+                tool_name: tool_name.clone(),
+                command: command_display,
+                tool_call_id: tc.id.clone(),
+                arguments: tc.function.arguments.clone(),
+            });
+        }
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn execute_subagent_tool_call(&mut self, index: usize, tc: ToolCall) {
+        let state = &mut self.subagent_states[index];
+        state.pending_tool_calls.remove(0);
+
+        let tool_name = tc.function.name.clone();
+        let arguments = tc.function.arguments.clone();
+        let call_id = tc.id.clone();
+        let tx = self.event_tx.clone();
+
+        // Todo tools — inline state mutation
+        match tool_name.as_str() {
+            "todo" => {
+                let result = self.handle_todo_tool(&arguments);
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "todo_complete" => {
+                let (result, success) = match self.handle_todo_complete(&arguments) {
+                    Ok(msg) => (msg, true),
+                    Err(msg) => (msg, false),
+                };
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success,
+                });
+                return;
+            }
+            "wipe_todo" => {
+                let result = self.handle_wipe_todo();
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            _ => {}
+        }
+
+        // Shell tool — use simple output capture to avoid interleaving
+        if tool_name == "shell" {
+            let args: Result<serde_json::Value, _> = serde_json::from_str(&arguments);
+            let command = args
+                .ok()
+                .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                .unwrap_or(arguments.clone());
+
+            tokio::spawn(async move {
+                let output = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                    .await;
+                let result = match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let mut r = String::new();
+                        if !stdout.is_empty() { r.push_str(&stdout); }
+                        if !stderr.is_empty() {
+                            if !r.is_empty() { r.push('\n'); }
+                            r.push_str("stderr: ");
+                            r.push_str(&stderr);
+                        }
+                        if r.is_empty() { r.push_str("(no output)"); }
+                        r
+                    }
+                    Err(e) => e.to_string(),
+                };
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+            });
+            return;
+        }
+
+        // Other built-in tools
+        tokio::spawn(async move {
+            let result = match tool_name.as_str() {
+                "read_file" => ReadFileTool.execute(&arguments).await,
+                "write_file" => WriteFileTool.execute(&arguments).await,
+                "edit_file" => EditFileTool.execute(&arguments).await,
+                "list_files" => ListFilesTool.execute(&arguments).await,
+                _ => Err(anyhow::anyhow!("unknown tool")),
+            };
+            match result {
+                Ok(output) => {
+                    let _ = tx.send(AppEvent::SubagentToolResult {
+                        index,
+                        tool_call_id: call_id,
+                        result: output,
+                        success: true,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::SubagentToolResult {
+                        index,
+                        tool_call_id: call_id,
+                        result: e.to_string(),
+                        success: false,
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn handle_subagent_tool_result(
+        &mut self,
+        index: usize,
+        tool_call_id: String,
+        result: String,
+        success: bool,
+    ) {
+        if index >= self.subagent_states.len() {
+            return;
+        }
+
+        let display = if success {
+            result.clone()
+        } else {
+            format!("Error: {result}")
+        };
+        self.messages.push(ChatEntry::SubagentOutput { index, text: display });
+
+        let content = if success { result } else { format!("Error: {result}") };
+        let state = &mut self.subagent_states[index];
+        state.conversation.push(Message {
+            role: "tool".into(),
+            content: Some(content),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id),
+        });
+
+        self.process_subagent_tool_call(index);
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn start_subagent_streaming(&mut self, index: usize) {
+        let state = &self.subagent_states[index];
+        let mut tool_defs = self.tool_registry.definitions();
+        tool_defs.extend(self.mcp_tool_defs.clone());
+        tool_defs.extend(self.todo_tool_definitions());
+        tool_defs.push(crate::subagent::tool_definition());
+
+        let request = ChatRequest {
+            model: self.active_model.clone(),
+            messages: state.conversation.clone(),
+            stream: true,
+            tools: if tool_defs.is_empty() { None } else { Some(tool_defs) },
+            think: true,
+        };
+
+        let tx = self.event_tx.clone();
+        let server = self.api_client.server().clone();
+        tokio::spawn(async move {
+            let client = ApiClient::new(server);
+            let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = client.chat_stream(request, stream_tx).await {
+                    let _ = tx2.send(AppEvent::Error(format!("[agent-{index}] {e}")));
+                }
+            });
+            while let Some(event) = stream_rx.recv().await {
+                let _ = tx.send(AppEvent::SubagentStream { index, event });
+            }
+        });
     }
 
     pub fn handle_pattern_submit(&mut self) {
@@ -2267,6 +2495,29 @@ mod app_tests {
             app.messages.last(),
             Some(ChatEntry::SubagentOutput { index: 0, text }) if text == "hello"
         ));
+    }
+
+    #[tokio::test]
+    async fn handle_subagent_tool_result_adds_to_conversation() {
+        let mut app = test_app();
+        let mut state = crate::subagent::SubagentState::new(0, None, "test");
+        state.pending_tool_calls.push(ToolCall {
+            id: "tc_1".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        });
+        app.subagent_states.push(state);
+        app.subagents_pending = 1;
+        app.subagent_call_id = Some("parent_call".into());
+
+        app.handle_subagent_tool_result(0, "tc_1".into(), "file contents".into(), true);
+        let last_msg = app.subagent_states[0].conversation.last().unwrap();
+        assert_eq!(last_msg.role, "tool");
+        assert_eq!(last_msg.content.as_deref(), Some("file contents"));
+        assert_eq!(last_msg.tool_call_id.as_deref(), Some("tc_1"));
     }
 
     #[test]
