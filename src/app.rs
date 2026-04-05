@@ -113,7 +113,7 @@ impl App {
         tool_registry.register(Box::new(WriteFileTool));
         tool_registry.register(Box::new(EditFileTool));
         tool_registry.register(Box::new(ListFilesTool));
-        let tool_count = tool_registry.tool_count();
+        let tool_count = tool_registry.tool_count() + 3; // +3 for todo tools
 
         let permissions = PermissionManager::load(&project_dir);
 
@@ -300,6 +300,7 @@ impl App {
                 if !self.mcp_tool_defs.is_empty() {
                     lines.push(format!("MCP tools: {}", self.mcp_tool_defs.len()));
                 }
+                lines.push("Todo tools: todo, todo_complete, wipe_todo".into());
                 self.messages.push(ChatEntry::System(lines.join("\n")));
             }
             "/skills" => {
@@ -1272,7 +1273,7 @@ mod app_tests {
         let mut app = test_app();
         app.handle_slash_command("/tools");
         assert!(
-            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5"))
+            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5") && s.contains("Todo tools:"))
         );
     }
 
@@ -1938,7 +1939,7 @@ mod app_tests {
         assert!(app.streaming_buffer.is_empty());
         assert_eq!(app.active_model, "llama3:8b");
         assert_eq!(app.active_server_name, "Local Ollama");
-        assert_eq!(app.tool_count, 5);
+        assert_eq!(app.tool_count, 8); // 5 built-in + 3 todo
         assert!(!app.should_quit);
         assert!(!app.yolo);
         assert!(app.pending_permission.is_none());
