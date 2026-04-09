@@ -7,6 +7,11 @@ llama-chat                                         [gemma4:latest] [Spark] [5 to
 ────────────────────────────────────────────────────────────────────────────────────
 you: What files are in the current directory?
 
+Reasoning [-] ─
+  │ Let me check the current directory contents.
+  │ I'll use the list_files tool to see what's there.
+  └──────────
+
 ⚙ list_files {"path":"."} ✓ allowed
 Cargo.toml  src/  tests/  README.md
 
@@ -29,11 +34,11 @@ gemma4:latest: Done — wrote a hello world program to /tmp/hello.rs.
 - **Streaming** — token-by-token response rendering, live shell output line-by-line
 - **Tool calling** — shell, read_file, write_file, edit_file, list_files with permission prompts
 - **MCP support** — stdio, SSE, and streamable HTTP transports with auto-detection
-- **Thinking mode** — parses `<think>` tags for models that support reasoning (gemma4, etc.)
+- **Thinking mode** — parses `<think>` tags with pretty-printed, collapsible blocks and distinct visual styling
 - **Permissions** — allow/deny/save-always/pattern prompts for shell; filesystem tools auto-allowed per session; `--yolo` to skip all prompts
 - **Skills** — markdown files with frontmatter, global (`~/.config/llama-chat/skills/`) and per-project (`.llama-chat/skills/`)
 - **Project context** — loads CLAUDE.md, AGENTS.md, Cursor `.cursor/rules/*.mdc`, and `.llama-chat/context.md` as system prompts
-- **Themes** — dark/light presets with per-color hex overrides in config
+- **Themes** — dark/light presets with per-color hex overrides including thinking-specific colors
 
 ## Install
 
@@ -61,6 +66,7 @@ api_key = "sk-your-token-here"
 [defaults]
 server = "local"
 model = "llama3:8b"
+show_thinking = true  # show/hide thinking blocks (default: true)
 
 [theme]
 preset = "dark"  # or "light"
@@ -68,6 +74,9 @@ preset = "dark"  # or "light"
 [theme.colors]  # optional overrides
 accent = "#818cf8"
 tool_ok = "#34d399"
+thinking_header = "#fbbf24"  # thinking block header color
+thinking_text = "#b4b4b4"     # thinking block text color
+thinking_border = "#fbbf24"   # thinking block border color
 ```
 
 ### MCP Servers
@@ -103,7 +112,8 @@ llama-chat --yolo   # skip all permission prompts
 | `/model [name]` | Switch model or list available |
 | `/server [name]` | Switch server or list configured |
 | `/tools` | List active tools |
-| `/skills` | List available skills |
+| `/skills` | List skills |
+| `/thinking` | Toggle thinking display |
 | `/init` | Generate AGENTS.md for the project |
 | `/clear` | Clear conversation |
 | `/help` | Show commands |
@@ -116,7 +126,9 @@ Skills are invoked by name: `/review`, `/explain`, etc.
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Ctrl+C` / `Esc` | Quit |
+| `Ctrl+C` | Stop generating (when streaming) / Quit (when idle) |
+| `t` | Toggle thinking display |
+| `Esc` | Quit |
 | `A` | Allow tool call |
 | `D` | Deny tool call |
 | `S` | Save always (persist to permissions.json) |

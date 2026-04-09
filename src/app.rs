@@ -54,8 +54,10 @@ pub struct App {
     pub todo_items: Vec<TodoItem>,
     pub server_healthy: Option<bool>,
     pub last_token_usage: Option<Usage>,
+    pub streaming_token_count: u32,
     pub subagent_states: Vec<crate::subagent::SubagentState>,
     pub subagents_pending: usize,
+    pub consecutive_errors: u32,
     pub subagent_call_id: Option<String>,
     #[allow(dead_code)]
     project_dir: PathBuf,
@@ -135,6 +137,46 @@ impl App {
 
         let mut conversation = Vec::new();
 
+        // Core system prompt: instruct the model to act as a coding agent
+        // that uses its tools directly rather than explaining steps to the user.
+        let cwd = project_dir.display();
+        let system_prompt = format!(
+            "You are an expert software engineer working as a CLI coding assistant. \
+             You have access to tools that let you interact with the user's system: \
+             shell (run commands), read_file, write_file, edit_file, list_files, \
+             todo (track tasks), and subagent (spawn parallel workers).\n\n\
+             CRITICAL RULES:\n\
+             - ALWAYS use your tools to accomplish tasks. Do NOT tell the user to run \
+               commands themselves — execute them directly with the shell tool.\n\
+             - When asked to create files or projects, use shell and write_file to do it.\n\
+             - When asked to modify code, use read_file to see it, then edit_file or \
+               write_file to change it.\n\
+             - For multi-step tasks, use the todo tool to create a plan, then execute \
+               each step, marking items complete as you go.\n\
+             - Be concise in your text responses. Let tool outputs speak for themselves.\n\
+             - The working directory is: {cwd}\n\
+             - Every shell command runs in a NEW sh -c subprocess from {cwd}.\n\
+             - cd has no effect on subsequent commands — use 'cd /path && cmd' in ONE command.\n\
+             - You can run multiple tool calls in sequence — after each tool result you \
+               will get a chance to call more tools or respond to the user.\n\n\
+             SHELL COMMANDS MUST BE NON-INTERACTIVE:\n\
+             - stdin is /dev/null — commands cannot prompt for input.\n\
+             - Always use flags that skip confirmation prompts:\n\
+               npm: --yes or -y (e.g. 'npm init -y', 'npx --yes create-vite')\n\
+               apt: -y\n\
+               pip: --yes or use pip install directly\n\
+               git: --no-edit where applicable\n\
+               rm: use -f when deletion is intended\n\
+             - For commands that might prompt, pipe 'yes |' or use CI=true.\n\
+             - Never run interactive editors (vim, nano) — use write_file/edit_file instead."
+        );
+        conversation.push(Message {
+            role: "system".into(),
+            content: Some(system_prompt),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
         // Load repository rules from standard files, in priority order.
         // Each file's content is injected as a system message so the model
         // follows the project's conventions.
@@ -209,6 +251,8 @@ impl App {
             last_token_usage: None,
             subagent_states: Vec::new(),
             subagents_pending: 0,
+            streaming_token_count: 0,
+            consecutive_errors: 0,
             subagent_call_id: None,
             project_dir,
         })
@@ -234,6 +278,7 @@ impl App {
             tool_call_id: None,
         });
 
+        self.last_token_usage = None;
         self.start_streaming();
     }
 
@@ -496,7 +541,7 @@ impl App {
     #[cfg(not(tarpaulin_include))]
     fn start_streaming(&mut self) {
         self.waiting_for_response = true;
-        self.last_token_usage = None;
+        self.streaming_token_count = 0;
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
         tool_defs.extend(self.todo_tool_definitions());
@@ -538,6 +583,7 @@ impl App {
         match event {
             StreamEvent::Token(text) => {
                 self.waiting_for_response = false;
+                self.streaming_token_count += 1;
                 self.streaming_buffer.push_str(&text);
             }
             StreamEvent::ToolCallDelta(delta) => {
@@ -579,6 +625,24 @@ impl App {
         // Reset thinking state in case stream ended mid-think
         self.in_thinking = false;
         self.thinking_buffer.clear();
+
+        // If the server didn't provide usage stats (e.g. Ollama streaming),
+        // build approximate usage from what we can observe.
+        if self.last_token_usage.is_none() && self.streaming_token_count > 0 {
+            // Rough estimate: ~4 chars per token for prompt context
+            let prompt_estimate = self
+                .conversation
+                .iter()
+                .filter_map(|m| m.content.as_ref())
+                .map(|c| c.len() as u32 / 4)
+                .sum::<u32>();
+            let completion = self.streaming_token_count;
+            self.last_token_usage = Some(Usage {
+                prompt_tokens: prompt_estimate,
+                completion_tokens: completion,
+                total_tokens: prompt_estimate + completion,
+            });
+        }
 
         if !self.streaming_buffer.is_empty() {
             let text = std::mem::take(&mut self.streaming_buffer);
@@ -670,7 +734,7 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            format!("{} {}", tool_name, tc.function.arguments)
+            tc.function.arguments.clone()
         };
 
         // All built-in tool calls go through the permission system. Use the
@@ -681,7 +745,7 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            command_display.clone()
+            format!("{} {}", tool_name, tc.function.arguments)
         };
 
         if self.yolo
@@ -870,8 +934,12 @@ impl App {
             let child = tokio::process::Command::new("sh")
                 .arg("-c")
                 .arg(&command)
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                .env("CI", "true")
+                .env("DEBIAN_FRONTEND", "noninteractive")
+                .env("npm_config_yes", "true")
                 .spawn();
 
             match child {
@@ -925,25 +993,35 @@ impl App {
                         })
                     });
 
-                    // Wait for process exit, then drain readers before
-                    // sending ToolResult so all output chunks are queued
+                    // Wait for process exit with timeout, then drain readers
+                    // before sending ToolResult so all output chunks are queued
                     // in the channel ahead of the result event.
                     let tx_done = tx.clone();
                     tokio::spawn(async move {
-                        let status = child.wait().await;
+                        let timeout = tokio::time::timeout(
+                            std::time::Duration::from_secs(120),
+                            child.wait(),
+                        );
+                        let (success, code, timed_out) = match timeout.await {
+                            Ok(Ok(s)) => (s.success(), s.code(), false),
+                            Ok(Err(_)) => (false, None, false),
+                            Err(_) => {
+                                // Timeout — kill the process
+                                let _ = child.kill().await;
+                                (false, None, true)
+                            }
+                        };
                         if let Some(h) = stdout_handle {
                             let _ = h.await;
                         }
                         if let Some(h) = stderr_handle {
                             let _ = h.await;
                         }
-                        let (success, code) = match &status {
-                            Ok(s) => (s.success(), s.code()),
-                            Err(_) => (false, None),
-                        };
                         let _ = tx_done.send(AppEvent::ToolResult {
                             tool_call_id: call_id,
-                            result: if success {
+                            result: if timed_out {
+                                "(command timed out after 120s)".into()
+                            } else if success {
                                 "(command completed)".into()
                             } else {
                                 format!("(command exited with {:?})", code)
@@ -1008,12 +1086,30 @@ impl App {
         };
         self.messages.push(ChatEntry::ToolOutput(display));
 
+        // Track consecutive errors to break infinite retry loops
+        if success {
+            self.consecutive_errors = 0;
+        } else {
+            self.consecutive_errors += 1;
+        }
+
         // Send the full output to the model
-        let content = if success {
+        let mut content = if success {
             full_output
         } else {
             format!("Error: {}", result)
         };
+
+        // After repeated failures, nudge the model to change strategy
+        if self.consecutive_errors >= 3 {
+            content.push_str(&format!(
+                "\n\n[SYSTEM: {} consecutive tool errors. \
+                 Stop repeating the same approach — analyze the error messages \
+                 and try a fundamentally different strategy.]",
+                self.consecutive_errors
+            ));
+        }
+
         self.conversation.push(Message {
             role: "tool".into(),
             content: Some(content),
@@ -1124,14 +1220,14 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            format!("{} {}", tool_name, tc.function.arguments)
+            tc.function.arguments.clone()
         };
 
         let permission_key = if tool_name == "shell" {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            command_display.clone()
+            format!("{} {}", tool_name, tc.function.arguments)
         };
 
         self.messages.push(ChatEntry::SubagentOutput {

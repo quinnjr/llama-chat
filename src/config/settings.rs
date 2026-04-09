@@ -24,6 +24,8 @@ pub struct DefaultsConfig {
     pub server: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default = "default_show_thinking")]
+    pub show_thinking: bool,
 }
 
 fn default_server() -> String {
@@ -32,12 +34,16 @@ fn default_server() -> String {
 fn default_model() -> String {
     "llama3:8b".into()
 }
+fn default_show_thinking() -> bool {
+    true
+}
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             server: default_server(),
             model: default_model(),
+            show_thinking: default_show_thinking(),
         }
     }
 }
