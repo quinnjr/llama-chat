@@ -265,4 +265,57 @@ impl MemoryService {
             Ok(())
         }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
     }
+
+    pub async fn recall(&self, query: &str) -> Result<Vec<RetrievedItem>, MemoryError> {
+        use crate::memory::retrieval::retrieve_from;
+
+        // Embed query (optional)
+        let q_vec = self.embed.embed(vec![query.to_string()])
+            .await?
+            .and_then(|mut v| v.pop());
+
+        let g = Arc::clone(&self.global);
+        let p = Arc::clone(&self.project);
+        let query = query.to_string();
+        let top_n = self.top_n;
+        let hl = self.decay_half_life_days;
+
+        let (mut g_items, mut p_items) = tokio::task::spawn_blocking(
+            move || -> Result<(Vec<RetrievedItem>, Vec<RetrievedItem>), MemoryError> {
+                let g_items = retrieve_from(&g, &query, q_vec.as_deref(), top_n, hl)?;
+                let p_items = retrieve_from(&p, &query, q_vec.as_deref(), top_n, hl)?;
+                Ok((g_items, p_items))
+            }
+        ).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))??;
+
+        // Project boost on ties
+        for it in &mut p_items { it.score *= 1.10; }
+        g_items.append(&mut p_items);
+        g_items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        g_items.truncate(self.top_n);
+
+        // Bump last_used_at on curated memories we returned. Chunks are not tracked.
+        let store_g = Arc::clone(&self.global);
+        let store_p = Arc::clone(&self.project);
+        let returned = g_items.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), MemoryError> {
+            let ts = now();
+            for it in &returned {
+                if it.kind.is_none() { continue; }
+                let store = match it.scope { Scope::Global => &store_g, Scope::Project => &store_p };
+                let conn = store.conn();
+                let guard = conn.lock().expect("poisoned");
+                // Match by content because RetrievedItem does not carry id upstream.
+                // This is a minor inefficiency but keeps the public type simple.
+                guard.execute(
+                    "UPDATE memories SET last_used_at = ?, use_count = use_count + 1
+                     WHERE content = ?",
+                    params![ts, it.content],
+                )?;
+            }
+            Ok(())
+        }).await.ok();
+
+        Ok(g_items)
+    }
 }
