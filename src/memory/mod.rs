@@ -127,4 +127,55 @@ impl MemoryService {
         .await
         .map_err(|e| MemoryError::Http(format!("join error: {e}")))?
     }
+
+    pub async fn forget(&self, id: i64, scope: Scope) -> Result<bool, MemoryError> {
+        let store = match scope {
+            Scope::Global => Arc::clone(&self.global),
+            Scope::Project => Arc::clone(&self.project),
+        };
+        tokio::task::spawn_blocking(move || -> Result<bool, MemoryError> {
+            let conn = store.conn();
+            let mut guard = conn.lock().expect("poisoned");
+            let tx = guard.transaction()?;
+            // Delete from vec first; FTS is handled by triggers on memories.
+            tx.execute("DELETE FROM memories_vec WHERE rowid = ?", params![id])?;
+            let n = tx.execute("DELETE FROM memories WHERE id = ?", params![id])?;
+            tx.commit()?;
+            Ok(n > 0)
+        }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
+    }
+
+    pub async fn list(&self, scope: Scope, limit: usize)
+        -> Result<Vec<crate::memory::types::Memory>, MemoryError>
+    {
+        use crate::memory::types::{Memory, Kind, Source};
+        let store = match scope {
+            Scope::Global => Arc::clone(&self.global),
+            Scope::Project => Arc::clone(&self.project),
+        };
+        tokio::task::spawn_blocking(move || -> Result<Vec<Memory>, MemoryError> {
+            let conn = store.conn();
+            let guard = conn.lock().expect("poisoned");
+            let mut stmt = guard.prepare(
+                "SELECT id, kind, content, source, created_at, updated_at, last_used_at, use_count
+                 FROM memories ORDER BY last_used_at DESC LIMIT ?"
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| {
+                Ok(Memory {
+                    id: r.get(0)?,
+                    kind: Kind::parse(&r.get::<_, String>(1)?).unwrap_or(Kind::Project),
+                    content: r.get(2)?,
+                    source: if r.get::<_, String>(3)? == "extracted"
+                        { Source::Extracted } else { Source::UserCommand },
+                    created_at: r.get(4)?,
+                    updated_at: r.get(5)?,
+                    last_used_at: r.get(6)?,
+                    use_count: r.get(7)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows { out.push(r?); }
+            Ok(out)
+        }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
+    }
 }
