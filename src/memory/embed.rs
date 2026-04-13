@@ -21,6 +21,7 @@ impl EmbeddingClient {
         Self { http: Client::new(), server, model }
     }
 
+    #[cfg(test)]
     pub fn model(&self) -> &str { &self.model }
 
     /// Embed one or more inputs. Returns `None` on any non-fatal failure

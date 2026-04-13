@@ -30,6 +30,7 @@ pub struct MemoryService {
     embed: EmbeddingClient,
     top_n: usize,
     decay_half_life_days: u32,
+    #[allow(dead_code)]
     embedding_dim: i64,
 }
 
@@ -81,6 +82,7 @@ impl MemoryService {
         })
     }
 
+    #[allow(dead_code)]
     pub fn embedding_dim(&self) -> i64 { self.embedding_dim }
 
     /// Save a curated memory. Writes into the requested scope.
@@ -235,15 +237,15 @@ impl MemoryService {
                     params![session_id, next_seq + i as i64, role, text, token_counts[i], now()],
                 )?;
                 let id = tx.last_insert_rowid();
-                if let Some(ref vs) = embs {
-                    if let Some(v) = vs.get(i) {
-                        let json = serde_json::to_string(v).unwrap();
-                        tx.execute(
-                            "INSERT INTO chunks_vec(rowid, vector)
-                             VALUES (?, vector_from_json(?, 'float4'))",
-                            params![id, json],
-                        )?;
-                    }
+                if let Some(ref vs) = embs
+                    && let Some(v) = vs.get(i)
+                {
+                    let json = serde_json::to_string(v).unwrap();
+                    tx.execute(
+                        "INSERT INTO chunks_vec(rowid, vector)
+                         VALUES (?, vector_from_json(?, 'float4'))",
+                        params![id, json],
+                    )?;
                 }
             }
             tx.commit()?;
@@ -367,4 +369,13 @@ impl MemoryService {
         }
         Ok(count)
     }
+}
+
+/// Test utilities exposed for integration tests.
+/// Not part of the public API.
+#[doc(hidden)]
+#[allow(unused_imports)]
+pub mod __test {
+    pub use crate::memory::schema::init as init_schema;
+    pub use crate::memory::chunk::{ChunkSlice, split as split_chunks};
 }

@@ -11,6 +11,7 @@ use crate::memory::types::{MemoryError, Scope};
 
 pub struct Store {
     pub scope: Scope,
+    #[allow(dead_code)]
     pub path: PathBuf,
     conn: Arc<Mutex<Connection>>,
 }

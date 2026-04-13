@@ -404,35 +404,35 @@ impl App {
                 self.should_quit = true;
             }
             "/clear" => {
-                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
-                    if self.config.memory.extraction_on_clear {
-                        let svc = svc.clone();
-                        let api = self.api_client.clone();
-                        let model = self.active_model.clone();
-                        // Block (with a visible "extracting..." placeholder) up to 30s.
-                        self.messages.push(crate::app::ChatEntry::System(
-                            "[extracting memories…]".into()));
-                        let result = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(async move {
-                                tokio::time::timeout(
-                                    std::time::Duration::from_secs(30),
-                                    svc.extract_session(&api, sid, model),
-                                ).await
-                            })
-                        });
-                        match result {
-                            Ok(Ok(())) => {
-                                self.messages.push(crate::app::ChatEntry::System(
-                                    "memories saved".into()));
-                            }
-                            Ok(Err(e)) => {
-                                self.messages.push(crate::app::ChatEntry::System(
-                                    format!("extract error: {e}")));
-                            }
-                            Err(_) => {
-                                self.messages.push(crate::app::ChatEntry::System(
-                                    "extraction timed out".into()));
-                            }
+                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id)
+                    && self.config.memory.extraction_on_clear
+                {
+                    let svc = svc.clone();
+                    let api = self.api_client.clone();
+                    let model = self.active_model.clone();
+                    // Block (with a visible "extracting..." placeholder) up to 30s.
+                    self.messages.push(crate::app::ChatEntry::System(
+                        "[extracting memories…]".into()));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async move {
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                svc.extract_session(&api, sid, model),
+                            ).await
+                        })
+                    });
+                    match result {
+                        Ok(Ok(())) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                "memories saved".into()));
+                        }
+                        Ok(Err(e)) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                format!("extract error: {e}")));
+                        }
+                        Err(_) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                "extraction timed out".into()));
                         }
                     }
                 }
@@ -1873,7 +1873,7 @@ mod app_tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let config = AppConfig::default();
         let mcp_config = McpConfig::default();
-        App::new(config, mcp_config, tx).unwrap()
+        App::new(config, mcp_config, tx, None).unwrap()
     }
 
     // --- submit_message ---
@@ -2694,7 +2694,7 @@ mod app_tests {
         config.servers.clear();
         config.defaults.server = "nonexistent".into();
         let mcp_config = McpConfig::default();
-        let app = App::new(config, mcp_config, tx).unwrap();
+        let app = App::new(config, mcp_config, tx, None).unwrap();
 
         // Should fall back to default "Local Ollama"
         assert_eq!(app.active_server_name, "Local Ollama");

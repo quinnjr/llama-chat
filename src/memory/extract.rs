@@ -72,6 +72,7 @@ pub fn load_transcript(store: &Store, session_id: i64) -> Result<String, MemoryE
 
 /// Dedup check: cosine similarity > threshold to any existing memory of same
 /// kind counts as a duplicate. Returns Some(existing_id) if dup.
+#[allow(dead_code)]
 pub fn find_duplicate(
     store: &Store, kind: Kind, candidate_vec: &[f32],
 ) -> Result<Option<i64>, MemoryError> {

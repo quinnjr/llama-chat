@@ -1,12 +1,11 @@
 //! Hybrid FTS5 + HNSW retrieval with reciprocal-rank fusion and time decay.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use rusqlite::params;
 
 use crate::memory::store::Store;
-use crate::memory::types::{Kind, MemoryError, RetrievedItem, Scope, now};
+use crate::memory::types::{Kind, MemoryError, RetrievedItem, now};
 
 const FTS_LIMIT: usize = 20;
 const VEC_LIMIT: usize = 20;

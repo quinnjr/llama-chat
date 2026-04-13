@@ -56,14 +56,20 @@ pub struct Memory {
     pub id: i64,
     pub kind: Kind,
     pub content: String,
+    #[allow(dead_code)]
     pub source: Source,
+    #[allow(dead_code)]
     pub created_at: i64,
+    #[allow(dead_code)]
     pub updated_at: i64,
+    #[allow(dead_code)]
     pub last_used_at: i64,
+    #[allow(dead_code)]
     pub use_count: i64,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Chunk {
     pub id: i64,
     pub session_id: i64,

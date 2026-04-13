@@ -1,6 +1,5 @@
 //! Round-trip: save → SELECT it back.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use tempfile::tempdir;

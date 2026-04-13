@@ -39,6 +39,50 @@ gemma4:latest: Done — wrote a hello world program to /tmp/hello.rs.
 - **Skills** — markdown files with frontmatter, global (`~/.config/llama-chat/skills/`) and per-project (`.llama-chat/skills/`)
 - **Project context** — loads CLAUDE.md, AGENTS.md, Cursor `.cursor/rules/*.mdc`, and `.llama-chat/context.md` as system prompts
 - **Themes** — dark/light presets with per-color hex overrides including thinking-specific colors
+- **Memory** — long-term memory with automatic conversation archival, hybrid FTS + vector search, and LLM-based extraction
+
+## Memory
+
+llama-chat includes an optional long-term memory system that maintains two databases:
+
+- **Global** (`~/.local/share/llama-chat/global.db`) — user preferences, feedback, cross-project facts
+- **Project** (`.llama-chat/memory.db`) — project-specific context, conversation archives
+
+### Configuration
+
+```toml
+# config.toml
+[memory]
+enabled = true
+embedding_model = "nomic-embed-text"  # model name for embeddings
+embedding_server = "local"            # server from [servers] to use
+top_n = 8                             # max memories injected per turn
+decay_half_life_days = 90             # time decay for curated memories
+extraction_on_clear = true            # run extraction on /clear
+
+[servers.local]
+url = "http://localhost:11434/v1"
+```
+
+The embedding server must support OpenAI-compatible `/embeddings` endpoint. All major local LLM servers (Ollama, llama.cpp, vLLM) support this.
+
+### Slash Commands
+
+| Command | Action |
+|---------|--------|
+| `/remember <text>` | Save a curated memory (user preference, project fact, etc.) |
+| `/forget <id>` | Delete a memory by ID |
+| `/memory [limit]` | List recent memories |
+
+### How It Works
+
+1. **Automatic archival**: Each conversation turn is chunked (500 tokens, 50-token overlap), embedded, and stored in the project database
+2. **Hybrid retrieval**: User messages trigger both full-text search (FTS5) and vector search (HNSW), fused with reciprocal rank fusion
+3. **Injection**: Top-N memories are injected into the system prompt as a `<memories>` block
+4. **End-of-session extraction**: On `/clear` or `/exit`, the LLM reviews the conversation and extracts key facts to save as curated memories
+5. **Orphan recovery**: Crashed sessions are automatically extracted on next startup
+
+Memories are scoped: global memories appear in all projects, project memories only in their project.
 
 ## Install
 
@@ -115,9 +159,12 @@ llama-chat --yolo   # skip all permission prompts
 | `/skills` | List skills |
 | `/thinking` | Toggle thinking display |
 | `/init` | Generate AGENTS.md for the project |
-| `/clear` | Clear conversation |
+| `/remember <text>` | Save a memory (if memory enabled) |
+| `/forget <id>` | Delete a memory by ID |
+| `/memory [limit]` | List recent memories |
+| `/clear` | Clear conversation (runs extraction if enabled) |
 | `/help` | Show commands |
-| `/exit` | Quit |
+| `/exit` | Quit (runs extraction if enabled) |
 
 Skills are invoked by name: `/review`, `/explain`, etc.
 

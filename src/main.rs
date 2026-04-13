@@ -70,10 +70,10 @@ async fn main() -> Result<()> {
         let api = app.api_client.clone();
         let model = app.active_model.clone();
         tokio::spawn(async move {
-            if let Ok(n) = svc.recover_orphans(&api, model).await {
-                if n > 0 {
-                    eprintln!("[memory] recovered {n} orphan session(s)");
-                }
+            if let Ok(n) = svc.recover_orphans(&api, model).await
+                && n > 0
+            {
+                eprintln!("[memory] recovered {n} orphan session(s)");
             }
         });
     }
@@ -112,17 +112,17 @@ async fn main() -> Result<()> {
     let input_tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(event) = ct_event::read() {
-                    match event {
-                        Event::Key(key) => {
-                            let _ = input_tx.send(AppEvent::Key(key));
-                        }
-                        Event::Resize(_, _) => {
-                            let _ = input_tx.send(AppEvent::Resize);
-                        }
-                        _ => {}
+            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
+                && let Ok(event) = ct_event::read()
+            {
+                match event {
+                    Event::Key(key) => {
+                        let _ = input_tx.send(AppEvent::Key(key));
                     }
+                    Event::Resize(_, _) => {
+                        let _ = input_tx.send(AppEvent::Resize);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -322,10 +322,10 @@ async fn main() -> Result<()> {
                         app.memory_disabled_reason = Some(reason);
                         app.memory = None;
                         app.memory_session_id = None;
-                    } else if let Some(rest) = reason.strip_prefix("session:") {
-                        if let Ok(id) = rest.parse::<i64>() {
-                            app.memory_session_id = Some(id);
-                        }
+                    } else if let Some(rest) = reason.strip_prefix("session:")
+                        && let Ok(id) = rest.parse::<i64>()
+                    {
+                        app.memory_session_id = Some(id);
                     }
                 }
                 AppEvent::MemoryExtractionDone { session_id: _ } => {
