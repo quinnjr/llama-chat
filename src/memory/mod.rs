@@ -337,4 +337,33 @@ impl MemoryService {
         ).await?;
         self.end_session_mark(session_id, title).await
     }
+
+    /// Find sessions with ended_at IS NULL and started_at > 1h ago, and run
+    /// extraction against each. Invoked once at startup.
+    pub async fn recover_orphans(
+        &self,
+        api: &crate::api::client::ApiClient,
+        model_name: String,
+    ) -> Result<usize, MemoryError> {
+        let store = Arc::clone(&self.project);
+        let cutoff = now() - 3600;
+        let orphans: Vec<i64> = tokio::task::spawn_blocking(move || -> Result<Vec<i64>, MemoryError> {
+            let conn = store.conn();
+            let guard = conn.lock().expect("poisoned");
+            let mut stmt = guard.prepare(
+                "SELECT id FROM sessions WHERE ended_at IS NULL AND started_at < ?"
+            )?;
+            let ids = stmt.query_map(params![cutoff], |r| r.get(0))?
+                .collect::<Result<Vec<i64>, _>>()?;
+            Ok(ids)
+        }).await.map_err(|e| MemoryError::Http(format!("join: {e}")))??;
+
+        let mut count = 0;
+        for id in orphans {
+            if self.extract_session(api, id, model_name.clone()).await.is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
 }
