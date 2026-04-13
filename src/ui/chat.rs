@@ -18,37 +18,35 @@ fn format_tool_command(name: &str, raw: &str) -> String {
     // For other tools, try to parse JSON and show key fields concisely
     match name {
         "write_file" | "read_file" | "edit_file" => {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-                if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
-                    if name == "write_file" {
-                        let size = v
-                            .get("content")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.len())
-                            .unwrap_or(0);
-                        return format!("{path} ({size} bytes)");
-                    } else if name == "edit_file" {
-                        return path.to_string();
-                    } else {
-                        return path.to_string();
-                    }
-                }
-            }
-            truncate_display(raw, 120)
-        }
-        "list_files" => {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-                if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+                && let Some(path) = v.get("path").and_then(|p| p.as_str())
+            {
+                if name == "write_file" {
+                    let size = v
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.len())
+                        .unwrap_or(0);
+                    return format!("{path} ({size} bytes)");
+                } else {
                     return path.to_string();
                 }
             }
             truncate_display(raw, 120)
         }
+        "list_files" => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+                && let Some(path) = v.get("path").and_then(|p| p.as_str())
+            {
+                return path.to_string();
+            }
+            truncate_display(raw, 120)
+        }
         "todo" => {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-                if let Some(items) = v.get("items").and_then(|i| i.as_array()) {
-                    return format!("{} items", items.len());
-                }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+                && let Some(items) = v.get("items").and_then(|i| i.as_array())
+            {
+                return format!("{} items", items.len());
             }
             truncate_display(raw, 120)
         }
@@ -251,7 +249,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 }
 
                 lines.push(Line::from(Span::styled(
-                    format!("  \u{2514}\u{2500}\u{2500}"),
+                    "  \u{2514}\u{2500}\u{2500}".to_string(),
                     Style::default().fg(theme.thinking_border),
                 )));
                 lines.push(Line::raw(""));

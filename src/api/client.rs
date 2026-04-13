@@ -7,6 +7,7 @@ use crate::api::stream::parse_sse_line;
 use crate::api::types::*;
 use crate::config::settings::ServerConfig;
 
+#[derive(Clone)]
 pub struct ApiClient {
     http: Client,
     server: ServerConfig,

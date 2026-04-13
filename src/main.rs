@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod event;
 mod mcp;
+mod memory;
 mod skills;
 mod subagent;
 mod tools;
@@ -38,12 +39,43 @@ async fn main() -> Result<()> {
     let config = AppConfig::load(&config_dir.join("config.toml"))?;
     let mcp_config = McpConfig::load(&config_dir.join("mcp.json"))?;
 
+    let project_dir = std::env::current_dir()?;
+    let (memory, memory_disabled_reason) = if config.memory.enabled {
+        match crate::memory::MemoryService::open(&config, &project_dir).await {
+            Ok(svc) => (Some(std::sync::Arc::new(svc)), None),
+            Err(e) => {
+                eprintln!("[memory] disabled: {e}");
+                (None, Some(e.to_string()))
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    let mut app = App::new(config, mcp_config.clone(), event_tx.clone())?;
+    let mut app = App::new(config, mcp_config.clone(), event_tx.clone(), memory.clone())?;
+
+    if let Some(reason) = memory_disabled_reason {
+        app.memory_disabled_reason = Some(reason);
+    }
 
     if yolo {
         app.yolo = true;
+    }
+
+    // Recover orphan sessions on startup
+    if let Some(svc) = memory {
+        let svc = svc.clone();
+        let api = app.api_client.clone();
+        let model = app.active_model.clone();
+        tokio::spawn(async move {
+            if let Ok(n) = svc.recover_orphans(&api, model).await
+                && n > 0
+            {
+                eprintln!("[memory] recovered {n} orphan session(s)");
+            }
+        });
     }
 
     for (name, entry) in &mcp_config.mcp_servers {
@@ -80,17 +112,17 @@ async fn main() -> Result<()> {
     let input_tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(event) = ct_event::read() {
-                    match event {
-                        Event::Key(key) => {
-                            let _ = input_tx.send(AppEvent::Key(key));
-                        }
-                        Event::Resize(_, _) => {
-                            let _ = input_tx.send(AppEvent::Resize);
-                        }
-                        _ => {}
+            if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
+                && let Ok(event) = ct_event::read()
+            {
+                match event {
+                    Event::Key(key) => {
+                        let _ = input_tx.send(AppEvent::Key(key));
                     }
+                    Event::Resize(_, _) => {
+                        let _ = input_tx.send(AppEvent::Resize);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -284,6 +316,20 @@ async fn main() -> Result<()> {
                     success,
                 } => {
                     app.handle_subagent_tool_result(index, tool_call_id, result, success);
+                }
+                AppEvent::MemoryStatus { disabled, reason } => {
+                    if disabled {
+                        app.memory_disabled_reason = Some(reason);
+                        app.memory = None;
+                        app.memory_session_id = None;
+                    } else if let Some(rest) = reason.strip_prefix("session:")
+                        && let Ok(id) = rest.parse::<i64>()
+                    {
+                        app.memory_session_id = Some(id);
+                    }
+                }
+                AppEvent::MemoryExtractionDone { session_id: _ } => {
+                    app.memory_session_id = None;
                 }
             }
         }
