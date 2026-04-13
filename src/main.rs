@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    let mut app = App::new(config, mcp_config.clone(), event_tx.clone(), memory)?;
+    let mut app = App::new(config, mcp_config.clone(), event_tx.clone(), memory.clone())?;
 
     if let Some(reason) = memory_disabled_reason {
         app.memory_disabled_reason = Some(reason);
@@ -62,6 +62,20 @@ async fn main() -> Result<()> {
 
     if yolo {
         app.yolo = true;
+    }
+
+    // Recover orphan sessions on startup
+    if let Some(svc) = memory {
+        let svc = svc.clone();
+        let api = app.api_client.clone();
+        let model = app.active_model.clone();
+        tokio::spawn(async move {
+            if let Ok(n) = svc.recover_orphans(&api, model).await {
+                if n > 0 {
+                    eprintln!("[memory] recovered {n} orphan session(s)");
+                }
+            }
+        });
     }
 
     for (name, entry) in &mcp_config.mcp_servers {

@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use rusqlite::params;
 
-pub use types::{Kind, MemoryError, Paths, RetrievedItem, Scope, Source};
+pub use types::{Kind, MemoryError, Paths, RetrievedItem, Scope};
+pub use commands::{parse as parse_command, save_ack, Command};
 
 use crate::config::settings::{AppConfig, ServerConfig};
 use crate::memory::embed::EmbeddingClient;

@@ -18,8 +18,17 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         None => ("●", "Checking", theme.thinking_header),
     };
 
-    // Line 1: model, server, health
-    let line1 = Line::from(vec![
+    // Memory indicator
+    let mem_label = if app.memory.is_some() {
+        " [mem]"
+    } else if app.memory_disabled_reason.is_some() {
+        " [mem:off]"
+    } else {
+        ""
+    };
+
+    // Line 1: model, server, health, memory
+    let mut line1_spans = vec![
         Span::styled("Model: ", Style::default().fg(theme.muted)),
         Span::styled(&app.active_model, Style::default().fg(theme.tool_ok)),
         Span::styled("  Server: ", Style::default().fg(theme.muted)),
@@ -29,7 +38,16 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             format!("{health_dot} {health_label}"),
             Style::default().fg(health_color),
         ),
-    ]);
+    ];
+
+    if !mem_label.is_empty() {
+        line1_spans.push(Span::styled(
+            mem_label,
+            Style::default().fg(theme.tool_ok),
+        ));
+    }
+
+    let line1 = Line::from(line1_spans);
 
     // Line 2: token usage
     let line2 = if let Some(ref usage) = app.last_token_usage {

@@ -265,6 +265,27 @@ impl App {
         })
     }
 
+    async fn build_memory_block(
+        svc: std::sync::Arc<crate::memory::MemoryService>,
+        query: String,
+    ) -> Option<String> {
+        let items = svc.recall(&query).await.ok()?;
+        if items.is_empty() {
+            return None;
+        }
+        let mut s = String::from("<memory>\n");
+        for it in items {
+            let scope = match it.scope {
+                crate::memory::Scope::Global => "global",
+                crate::memory::Scope::Project => "project",
+            };
+            let kind = it.kind.map(|k| k.as_str()).unwrap_or("chunk");
+            s.push_str(&format!("- [{scope}/{kind}] {}\n", it.content));
+        }
+        s.push_str("</memory>\n");
+        Some(s)
+    }
+
     pub fn submit_message(&mut self) {
         let input = self.input_buffer.trim().to_string();
         if input.is_empty() {
@@ -302,28 +323,120 @@ impl App {
             });
         }
 
+        // Inject retrieved memories before the user turn
+        if let Some(ref svc) = self.memory {
+            let svc_cloned = svc.clone();
+            let q = input.clone();
+            // Blocking inline: recall is a hot-path operation that must complete
+            // before start_streaming injects the system prompt. We use a short
+            // timeout so a hung embeddings endpoint does not brick input.
+            let block_opt = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        App::build_memory_block(svc_cloned, q),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                })
+            });
+            if let Some(block) = block_opt {
+                self.conversation.push(crate::api::types::Message {
+                    role: "system".into(),
+                    content: Some(block),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+
         self.messages.push(ChatEntry::User(input.clone()));
         self.conversation.push(Message {
             role: "user".into(),
-            content: Some(input),
+            content: Some(input.clone()),
             tool_calls: None,
             tool_call_id: None,
         });
+
+        // Archive user turn immediately
+        if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+            let svc = svc.clone();
+            let content = input.clone();
+            tokio::spawn(async move {
+                if let Err(e) = svc.archive_turn(sid, "user", content).await {
+                    eprintln!("[memory] archive user turn: {e}");
+                }
+            });
+        }
 
         self.last_token_usage = None;
         self.start_streaming();
     }
 
     fn handle_slash_command(&mut self, input: &str) {
+        // Try memory commands first. None means "not ours, fall through".
+        if let Some(parsed) = crate::memory::parse_command(input) {
+            match parsed {
+                Ok(cmd) => self.dispatch_memory_command(cmd),
+                Err(msg) => self.messages.push(crate::app::ChatEntry::System(msg)),
+            }
+            return;
+        }
+
         let parts: Vec<&str> = input.splitn(2, ' ').collect();
         let cmd = parts[0];
         let arg = parts.get(1).map(|s| s.trim());
 
         match cmd {
             "/exit" | "/quit" => {
+                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+                    let svc = svc.clone();
+                    let api = self.api_client.clone();
+                    let model = self.active_model.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            svc.extract_session(&api, sid, model),
+                        ).await;
+                    });
+                }
                 self.should_quit = true;
             }
             "/clear" => {
+                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+                    if self.config.memory.extraction_on_clear {
+                        let svc = svc.clone();
+                        let api = self.api_client.clone();
+                        let model = self.active_model.clone();
+                        // Block (with a visible "extracting..." placeholder) up to 30s.
+                        self.messages.push(crate::app::ChatEntry::System(
+                            "[extracting memories…]".into()));
+                        let result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async move {
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(30),
+                                    svc.extract_session(&api, sid, model),
+                                ).await
+                            })
+                        });
+                        match result {
+                            Ok(Ok(())) => {
+                                self.messages.push(crate::app::ChatEntry::System(
+                                    "memories saved".into()));
+                            }
+                            Ok(Err(e)) => {
+                                self.messages.push(crate::app::ChatEntry::System(
+                                    format!("extract error: {e}")));
+                            }
+                            Err(_) => {
+                                self.messages.push(crate::app::ChatEntry::System(
+                                    "extraction timed out".into()));
+                            }
+                        }
+                    }
+                }
+                self.memory_session_id = None;
                 self.messages.clear();
                 self.conversation.retain(|m| m.role == "system");
                 self.messages
@@ -438,7 +551,7 @@ impl App {
             }
             "/help" => {
                 self.messages.push(ChatEntry::System(
-                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /thinking      — toggle thinking display\n  /exit          — quit\n\nKeybindings:\n  Ctrl+C          — stop generating\n  t               — toggle thinking".into()
+                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /thinking      — toggle thinking display\n  /remember <text> — save a memory\n  /forget <id>     — delete a memory\n  /memory list     — list memories\n  /exit          — quit\n\nKeybindings:\n  Ctrl+C          — stop generating\n  t               — toggle thinking".into()
                 ));
             }
             other => {
@@ -458,6 +571,90 @@ impl App {
                     self.messages
                         .push(ChatEntry::System(format!("Unknown command: {other}")));
                 }
+            }
+        }
+    }
+
+    fn dispatch_memory_command(&mut self, cmd: crate::memory::Command) {
+        use crate::memory::{Command, Scope, save_ack};
+        let Some(ref svc) = self.memory else {
+            self.messages.push(crate::app::ChatEntry::System(
+                format!("memory disabled: {}",
+                        self.memory_disabled_reason.as_deref().unwrap_or("not enabled"))
+            ));
+            return;
+        };
+        let svc = svc.clone();
+        let tx = self.event_tx.clone();
+        match cmd {
+            Command::Remember { content, scope, kind } => {
+                tokio::spawn(async move {
+                    match svc.save(content, kind, scope).await {
+                        Ok(id) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind)));
+                        }
+                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                    }
+                });
+            }
+            Command::RememberThis { scope, kind } => {
+                // Find the last assistant turn from current conversation.
+                let last_asst = self.conversation.iter().rev()
+                    .find(|m| m.role == "assistant")
+                    .and_then(|m| m.content.clone());
+                let Some(content) = last_asst else {
+                    self.messages.push(crate::app::ChatEntry::System(
+                        "no assistant turn to remember".into()));
+                    return;
+                };
+                tokio::spawn(async move {
+                    match svc.save(content, kind, scope).await {
+                        Ok(id) => { let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind))); }
+                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                    }
+                });
+            }
+            Command::Forget { id, scope } => {
+                tokio::spawn(async move {
+                    match svc.forget(id, scope).await {
+                        Ok(true)  => { let _ = tx.send(crate::event::AppEvent::Error(format!("forgot #{id}"))); }
+                        Ok(false) => { let _ = tx.send(crate::event::AppEvent::Error(format!("no memory #{id}"))); }
+                        Err(e)    => { let _ = tx.send(crate::event::AppEvent::Error(format!("forget: {e}"))); }
+                    }
+                });
+            }
+            Command::List { scope } => {
+                let scopes: Vec<Scope> = match scope {
+                    Some(s) => vec![s],
+                    None => vec![Scope::Global, Scope::Project],
+                };
+                tokio::spawn(async move {
+                    for s in scopes {
+                        match svc.list(s, 50).await {
+                            Ok(ms) => {
+                                let label = match s { Scope::Global => "global", Scope::Project => "project" };
+                                let header = format!("── {label} ({}) ──", ms.len());
+                                let _ = tx.send(crate::event::AppEvent::Error(header));
+                                for m in ms {
+                                    let _ = tx.send(crate::event::AppEvent::Error(
+                                        format!("#{} [{}] {}", m.id, m.kind.as_str(), m.content)
+                                    ));
+                                }
+                            }
+                            Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("list: {e}"))); }
+                        }
+                    }
+                });
+            }
+            Command::Reindex | Command::Accept => {
+                self.messages.push(crate::app::ChatEntry::System(
+                    "reindex/accept not implemented yet".into()));
+            }
+            Command::Disable => {
+                self.memory = None;
+                self.memory_disabled_reason = Some("user /memory disable".into());
+                self.messages.push(crate::app::ChatEntry::System(
+                    "memory disabled for this session".into()));
             }
         }
     }
@@ -729,10 +926,23 @@ impl App {
             // so the model retains its reasoning context
             self.conversation.push(Message {
                 role: "assistant".into(),
-                content: Some(text),
+                content: Some(text.clone()),
                 tool_calls: None,
                 tool_call_id: None,
             });
+
+            // Archive assistant turn
+            if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+                let final_text = text;
+                if !final_text.trim().is_empty() {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = svc.archive_turn(sid, "assistant", final_text).await {
+                            eprintln!("[memory] archive assistant turn: {e}");
+                        }
+                    });
+                }
+            }
         }
 
         if !self.assembling_tool_calls.is_empty() {
