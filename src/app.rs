@@ -61,6 +61,9 @@ pub struct App {
     pub subagent_call_id: Option<String>,
     #[allow(dead_code)]
     project_dir: PathBuf,
+    pub memory: Option<Arc<crate::memory::MemoryService>>,
+    pub memory_session_id: Option<i64>,
+    pub memory_disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +106,7 @@ impl App {
         config: AppConfig,
         _mcp_config: McpConfig,
         event_tx: mpsc::UnboundedSender<AppEvent>,
+        memory: Option<Arc<crate::memory::MemoryService>>,
     ) -> Result<Self> {
         let theme = Theme::from_config(&config.theme.preset, &config.theme.colors);
         let project_dir = std::env::current_dir()?;
@@ -255,6 +259,9 @@ impl App {
             consecutive_errors: 0,
             subagent_call_id: None,
             project_dir,
+            memory,
+            memory_session_id: None,
+            memory_disabled_reason: None,
         })
     }
 
@@ -268,6 +275,31 @@ impl App {
         if input.starts_with('/') {
             self.handle_slash_command(&input);
             return;
+        }
+
+        if self.memory_session_id.is_none()
+            && let Some(ref svc) = self.memory
+        {
+            let svc = svc.clone();
+            let server = Some(self.active_server_name.clone());
+            let model = Some(self.active_model.clone());
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                match svc.begin_session(server, model).await {
+                    Ok(id) => {
+                        let _ = tx.send(crate::event::AppEvent::MemoryStatus {
+                            disabled: false,
+                            reason: format!("session:{id}"),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(crate::event::AppEvent::MemoryStatus {
+                            disabled: true,
+                            reason: format!("begin_session: {e}"),
+                        });
+                    }
+                }
+            });
         }
 
         self.messages.push(ChatEntry::User(input.clone()));

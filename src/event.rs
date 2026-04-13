@@ -42,4 +42,11 @@ pub enum AppEvent {
     HealthCheck(bool),
     Resize,
     Error(String),
+    MemoryStatus {
+        disabled: bool,
+        reason: String,
+    },
+    MemoryExtractionDone {
+        session_id: i64,
+    },
 }

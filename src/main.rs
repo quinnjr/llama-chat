@@ -39,9 +39,26 @@ async fn main() -> Result<()> {
     let config = AppConfig::load(&config_dir.join("config.toml"))?;
     let mcp_config = McpConfig::load(&config_dir.join("mcp.json"))?;
 
+    let project_dir = std::env::current_dir()?;
+    let (memory, memory_disabled_reason) = if config.memory.enabled {
+        match crate::memory::MemoryService::open(&config, &project_dir).await {
+            Ok(svc) => (Some(std::sync::Arc::new(svc)), None),
+            Err(e) => {
+                eprintln!("[memory] disabled: {e}");
+                (None, Some(e.to_string()))
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    let mut app = App::new(config, mcp_config.clone(), event_tx.clone())?;
+    let mut app = App::new(config, mcp_config.clone(), event_tx.clone(), memory)?;
+
+    if let Some(reason) = memory_disabled_reason {
+        app.memory_disabled_reason = Some(reason);
+    }
 
     if yolo {
         app.yolo = true;
@@ -285,6 +302,20 @@ async fn main() -> Result<()> {
                     success,
                 } => {
                     app.handle_subagent_tool_result(index, tool_call_id, result, success);
+                }
+                AppEvent::MemoryStatus { disabled, reason } => {
+                    if disabled {
+                        app.memory_disabled_reason = Some(reason);
+                        app.memory = None;
+                        app.memory_session_id = None;
+                    } else if let Some(rest) = reason.strip_prefix("session:") {
+                        if let Ok(id) = rest.parse::<i64>() {
+                            app.memory_session_id = Some(id);
+                        }
+                    }
+                }
+                AppEvent::MemoryExtractionDone { session_id: _ } => {
+                    app.memory_session_id = None;
                 }
             }
         }
