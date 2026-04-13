@@ -8,3 +8,7 @@
 # own -std=c++17 win. Cargo itself still honours the Rust release
 # profile, so this does not affect optimisation levels.
 CXXFLAGS = { value = "", force = true }
+
+# sqlite-vector-rs needs to load its extension library at runtime.
+# Point it to the built library so tests can find it automatically.
+SQLITE_VECTOR_RS_LIB = { value = "target/debug/libsqlite_vector_rs.so", relative = true }
