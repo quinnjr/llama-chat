@@ -1,1 +1,1 @@
-// Populated in a later task.
+//! Session-end extraction. Populated in a later task.
