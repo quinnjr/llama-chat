@@ -318,4 +318,23 @@ impl MemoryService {
 
         Ok(g_items)
     }
+
+    /// Run end-of-session extraction. Blocking-caller usage: awaited.
+    /// Fire-and-forget callers: wrap in tokio::spawn.
+    pub async fn extract_session(
+        &self,
+        api: &crate::api::client::ApiClient,
+        session_id: i64,
+        model_name: String,
+    ) -> Result<(), MemoryError> {
+        let title = crate::memory::extract::run(
+            api,
+            &self.embed,
+            Arc::clone(&self.project),
+            Arc::clone(&self.global),
+            session_id,
+            model_name,
+        ).await?;
+        self.end_session_mark(session_id, title).await
+    }
 }
