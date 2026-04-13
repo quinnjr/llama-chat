@@ -51,6 +51,13 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 // Response and delta types are populated by serde deserialization;
 // not all fields are read by application code, but they must exist
 // for correct JSON mapping.
@@ -59,6 +66,7 @@ pub struct FunctionCall {
 pub struct ChatResponse {
     pub id: String,
     pub choices: Vec<Choice>,
+    pub usage: Option<Usage>,
 }
 
 #[allow(dead_code)]
@@ -241,5 +249,30 @@ mod tests {
         assert_eq!(json["id"], "call_abc");
         assert_eq!(json["type"], "function");
         assert_eq!(json["function"]["name"], "shell");
+    }
+
+    #[test]
+    fn deserialize_usage() {
+        let json = r#"{"prompt_tokens":142,"completion_tokens":87,"total_tokens":229}"#;
+        let usage: Usage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 142);
+        assert_eq!(usage.completion_tokens, 87);
+        assert_eq!(usage.total_tokens, 229);
+    }
+
+    #[test]
+    fn chat_response_with_usage() {
+        let json = r#"{"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn chat_response_without_usage() {
+        let json = r#"{"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}"#;
+        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.usage.is_none());
     }
 }

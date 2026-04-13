@@ -30,6 +30,7 @@ pub struct App {
     pub pattern_input: Option<String>,
     pub yolo: bool,
     pub should_quit: bool,
+    pub show_thinking: bool,
 
     pub config: AppConfig,
     pub theme: Theme,
@@ -47,15 +48,32 @@ pub struct App {
     pub tool_output_buffer: String,
     pub thinking_buffer: String,
     pub in_thinking: bool,
+    pub waiting_for_response: bool,
+    pub abort_handle: Option<tokio::sync::oneshot::Sender<()>>,
+    pub anim_frame: u8,
+    pub todo_items: Vec<TodoItem>,
+    pub server_healthy: Option<bool>,
+    pub last_token_usage: Option<Usage>,
+    pub streaming_token_count: u32,
+    pub subagent_states: Vec<crate::subagent::SubagentState>,
+    pub subagents_pending: usize,
+    pub consecutive_errors: u32,
+    pub subagent_call_id: Option<String>,
     #[allow(dead_code)]
     project_dir: PathBuf,
+    pub memory: Option<Arc<crate::memory::MemoryService>>,
+    pub memory_session_id: Option<i64>,
+    pub memory_disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
     User(String),
     Assistant(String),
-    Thinking(String),
+    Thinking {
+        content: String,
+        collapsed: bool,
+    },
     ToolCall {
         name: String,
         command: String,
@@ -63,6 +81,10 @@ pub enum ChatEntry {
     },
     ToolOutput(String),
     System(String),
+    SubagentOutput {
+        index: usize,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -73,11 +95,18 @@ pub struct PendingPermission {
     pub arguments: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TodoItem {
+    pub text: String,
+    pub done: bool,
+}
+
 impl App {
     pub fn new(
         config: AppConfig,
         _mcp_config: McpConfig,
         event_tx: mpsc::UnboundedSender<AppEvent>,
+        memory: Option<Arc<crate::memory::MemoryService>>,
     ) -> Result<Self> {
         let theme = Theme::from_config(&config.theme.preset, &config.theme.colors);
         let project_dir = std::env::current_dir()?;
@@ -99,7 +128,7 @@ impl App {
         tool_registry.register(Box::new(WriteFileTool));
         tool_registry.register(Box::new(EditFileTool));
         tool_registry.register(Box::new(ListFilesTool));
-        let tool_count = tool_registry.tool_count();
+        let tool_count = tool_registry.tool_count() + 4; // +3 todo + 1 subagent
 
         let permissions = PermissionManager::load(&project_dir);
 
@@ -111,6 +140,46 @@ impl App {
             skills::load_all_skills(&global_skills_dir, &project_skills_dir).unwrap_or_default();
 
         let mut conversation = Vec::new();
+
+        // Core system prompt: instruct the model to act as a coding agent
+        // that uses its tools directly rather than explaining steps to the user.
+        let cwd = project_dir.display();
+        let system_prompt = format!(
+            "You are an expert software engineer working as a CLI coding assistant. \
+             You have access to tools that let you interact with the user's system: \
+             shell (run commands), read_file, write_file, edit_file, list_files, \
+             todo (track tasks), and subagent (spawn parallel workers).\n\n\
+             CRITICAL RULES:\n\
+             - ALWAYS use your tools to accomplish tasks. Do NOT tell the user to run \
+               commands themselves — execute them directly with the shell tool.\n\
+             - When asked to create files or projects, use shell and write_file to do it.\n\
+             - When asked to modify code, use read_file to see it, then edit_file or \
+               write_file to change it.\n\
+             - For multi-step tasks, use the todo tool to create a plan, then execute \
+               each step, marking items complete as you go.\n\
+             - Be concise in your text responses. Let tool outputs speak for themselves.\n\
+             - The working directory is: {cwd}\n\
+             - Every shell command runs in a NEW sh -c subprocess from {cwd}.\n\
+             - cd has no effect on subsequent commands — use 'cd /path && cmd' in ONE command.\n\
+             - You can run multiple tool calls in sequence — after each tool result you \
+               will get a chance to call more tools or respond to the user.\n\n\
+             SHELL COMMANDS MUST BE NON-INTERACTIVE:\n\
+             - stdin is /dev/null — commands cannot prompt for input.\n\
+             - Always use flags that skip confirmation prompts:\n\
+               npm: --yes or -y (e.g. 'npm init -y', 'npx --yes create-vite')\n\
+               apt: -y\n\
+               pip: --yes or use pip install directly\n\
+               git: --no-edit where applicable\n\
+               rm: use -f when deletion is intended\n\
+             - For commands that might prompt, pipe 'yes |' or use CI=true.\n\
+             - Never run interactive editors (vim, nano) — use write_file/edit_file instead."
+        );
+        conversation.push(Message {
+            role: "system".into(),
+            content: Some(system_prompt),
+            tool_calls: None,
+            tool_call_id: None,
+        });
 
         // Load repository rules from standard files, in priority order.
         // Each file's content is injected as a system message so the model
@@ -158,6 +227,7 @@ impl App {
             pattern_input: None,
             yolo: false,
             should_quit: false,
+            show_thinking: config.defaults.show_thinking,
             config,
             theme,
             api_client,
@@ -167,7 +237,7 @@ impl App {
             mcp_servers: HashMap::new(),
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
-            session_allow: ["read_file", "write_file", "edit_file", "list_files"]
+            session_allow: ["read_file", "write_file", "edit_file", "list_files", "todo", "todo_complete", "wipe_todo", "subagent"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -177,8 +247,43 @@ impl App {
             tool_output_buffer: String::new(),
             thinking_buffer: String::new(),
             in_thinking: false,
+            waiting_for_response: false,
+            abort_handle: None,
+            anim_frame: 0,
+            todo_items: Vec::new(),
+            server_healthy: None,
+            last_token_usage: None,
+            subagent_states: Vec::new(),
+            subagents_pending: 0,
+            streaming_token_count: 0,
+            consecutive_errors: 0,
+            subagent_call_id: None,
             project_dir,
+            memory,
+            memory_session_id: None,
+            memory_disabled_reason: None,
         })
+    }
+
+    async fn build_memory_block(
+        svc: std::sync::Arc<crate::memory::MemoryService>,
+        query: String,
+    ) -> Option<String> {
+        let items = svc.recall(&query).await.ok()?;
+        if items.is_empty() {
+            return None;
+        }
+        let mut s = String::from("<memory>\n");
+        for it in items {
+            let scope = match it.scope {
+                crate::memory::Scope::Global => "global",
+                crate::memory::Scope::Project => "project",
+            };
+            let kind = it.kind.map(|k| k.as_str()).unwrap_or("chunk");
+            s.push_str(&format!("- [{scope}/{kind}] {}\n", it.content));
+        }
+        s.push_str("</memory>\n");
+        Some(s)
     }
 
     pub fn submit_message(&mut self) {
@@ -193,27 +298,145 @@ impl App {
             return;
         }
 
+        if self.memory_session_id.is_none()
+            && let Some(ref svc) = self.memory
+        {
+            let svc = svc.clone();
+            let server = Some(self.active_server_name.clone());
+            let model = Some(self.active_model.clone());
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                match svc.begin_session(server, model).await {
+                    Ok(id) => {
+                        let _ = tx.send(crate::event::AppEvent::MemoryStatus {
+                            disabled: false,
+                            reason: format!("session:{id}"),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(crate::event::AppEvent::MemoryStatus {
+                            disabled: true,
+                            reason: format!("begin_session: {e}"),
+                        });
+                    }
+                }
+            });
+        }
+
+        // Inject retrieved memories before the user turn
+        if let Some(ref svc) = self.memory {
+            let svc_cloned = svc.clone();
+            let q = input.clone();
+            // Blocking inline: recall is a hot-path operation that must complete
+            // before start_streaming injects the system prompt. We use a short
+            // timeout so a hung embeddings endpoint does not brick input.
+            let block_opt = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        App::build_memory_block(svc_cloned, q),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                })
+            });
+            if let Some(block) = block_opt {
+                self.conversation.push(crate::api::types::Message {
+                    role: "system".into(),
+                    content: Some(block),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+
         self.messages.push(ChatEntry::User(input.clone()));
         self.conversation.push(Message {
             role: "user".into(),
-            content: Some(input),
+            content: Some(input.clone()),
             tool_calls: None,
             tool_call_id: None,
         });
 
+        // Archive user turn immediately
+        if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+            let svc = svc.clone();
+            let content = input.clone();
+            tokio::spawn(async move {
+                if let Err(e) = svc.archive_turn(sid, "user", content).await {
+                    eprintln!("[memory] archive user turn: {e}");
+                }
+            });
+        }
+
+        self.last_token_usage = None;
         self.start_streaming();
     }
 
     fn handle_slash_command(&mut self, input: &str) {
+        // Try memory commands first. None means "not ours, fall through".
+        if let Some(parsed) = crate::memory::parse_command(input) {
+            match parsed {
+                Ok(cmd) => self.dispatch_memory_command(cmd),
+                Err(msg) => self.messages.push(crate::app::ChatEntry::System(msg)),
+            }
+            return;
+        }
+
         let parts: Vec<&str> = input.splitn(2, ' ').collect();
         let cmd = parts[0];
         let arg = parts.get(1).map(|s| s.trim());
 
         match cmd {
             "/exit" | "/quit" => {
+                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+                    let svc = svc.clone();
+                    let api = self.api_client.clone();
+                    let model = self.active_model.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            svc.extract_session(&api, sid, model),
+                        ).await;
+                    });
+                }
                 self.should_quit = true;
             }
             "/clear" => {
+                if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id)
+                    && self.config.memory.extraction_on_clear
+                {
+                    let svc = svc.clone();
+                    let api = self.api_client.clone();
+                    let model = self.active_model.clone();
+                    // Block (with a visible "extracting..." placeholder) up to 30s.
+                    self.messages.push(crate::app::ChatEntry::System(
+                        "[extracting memories…]".into()));
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async move {
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                svc.extract_session(&api, sid, model),
+                            ).await
+                        })
+                    });
+                    match result {
+                        Ok(Ok(())) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                "memories saved".into()));
+                        }
+                        Ok(Err(e)) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                format!("extract error: {e}")));
+                        }
+                        Err(_) => {
+                            self.messages.push(crate::app::ChatEntry::System(
+                                "extraction timed out".into()));
+                        }
+                    }
+                }
+                self.memory_session_id = None;
                 self.messages.clear();
                 self.conversation.retain(|m| m.role == "system");
                 self.messages
@@ -250,6 +473,7 @@ impl App {
                     if let Some(server) = self.config.servers.get(name) {
                         self.api_client.set_server(server.clone());
                         self.active_server_name = server.name.clone();
+                        self.server_healthy = None;
                         self.messages.push(ChatEntry::System(format!(
                             "Switched to server: {}",
                             server.name
@@ -281,6 +505,7 @@ impl App {
                 if !self.mcp_tool_defs.is_empty() {
                     lines.push(format!("MCP tools: {}", self.mcp_tool_defs.len()));
                 }
+                lines.push("Todo tools: todo, todo_complete, wipe_todo".into());
                 self.messages.push(ChatEntry::System(lines.join("\n")));
             }
             "/skills" => {
@@ -304,7 +529,6 @@ impl App {
                         "AGENTS.md already exists. Edit it directly to update.".into(),
                     ));
                 } else {
-                    // Ask the model to generate AGENTS.md by examining the project
                     self.messages.push(ChatEntry::System(
                         "Generating AGENTS.md for this project...".into(),
                     ));
@@ -318,9 +542,16 @@ impl App {
                     self.start_streaming();
                 }
             }
+            "/thinking" => {
+                self.show_thinking = !self.show_thinking;
+                let status = if self.show_thinking { "visible" } else { "hidden" };
+                self.messages.push(ChatEntry::System(format!(
+                    "Thinking display: {status}"
+                )));
+            }
             "/help" => {
                 self.messages.push(ChatEntry::System(
-                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /exit          — quit".into()
+                    "Commands:\n  /model [name]  — switch model\n  /server [name] — switch server\n  /tools         — list tools\n  /skills        — list skills\n  /init          — generate AGENTS.md\n  /clear         — clear chat\n  /thinking      — toggle thinking display\n  /remember <text> — save a memory\n  /forget <id>     — delete a memory\n  /memory list     — list memories\n  /exit          — quit\n\nKeybindings:\n  Ctrl+C          — stop generating\n  t               — toggle thinking".into()
                 ));
             }
             other => {
@@ -344,10 +575,206 @@ impl App {
         }
     }
 
+    fn dispatch_memory_command(&mut self, cmd: crate::memory::Command) {
+        use crate::memory::{Command, Scope, save_ack};
+        let Some(ref svc) = self.memory else {
+            self.messages.push(crate::app::ChatEntry::System(
+                format!("memory disabled: {}",
+                        self.memory_disabled_reason.as_deref().unwrap_or("not enabled"))
+            ));
+            return;
+        };
+        let svc = svc.clone();
+        let tx = self.event_tx.clone();
+        match cmd {
+            Command::Remember { content, scope, kind } => {
+                tokio::spawn(async move {
+                    match svc.save(content, kind, scope).await {
+                        Ok(id) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind)));
+                        }
+                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                    }
+                });
+            }
+            Command::RememberThis { scope, kind } => {
+                // Find the last assistant turn from current conversation.
+                let last_asst = self.conversation.iter().rev()
+                    .find(|m| m.role == "assistant")
+                    .and_then(|m| m.content.clone());
+                let Some(content) = last_asst else {
+                    self.messages.push(crate::app::ChatEntry::System(
+                        "no assistant turn to remember".into()));
+                    return;
+                };
+                tokio::spawn(async move {
+                    match svc.save(content, kind, scope).await {
+                        Ok(id) => { let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind))); }
+                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                    }
+                });
+            }
+            Command::Forget { id, scope } => {
+                tokio::spawn(async move {
+                    match svc.forget(id, scope).await {
+                        Ok(true)  => { let _ = tx.send(crate::event::AppEvent::Error(format!("forgot #{id}"))); }
+                        Ok(false) => { let _ = tx.send(crate::event::AppEvent::Error(format!("no memory #{id}"))); }
+                        Err(e)    => { let _ = tx.send(crate::event::AppEvent::Error(format!("forget: {e}"))); }
+                    }
+                });
+            }
+            Command::List { scope } => {
+                let scopes: Vec<Scope> = match scope {
+                    Some(s) => vec![s],
+                    None => vec![Scope::Global, Scope::Project],
+                };
+                tokio::spawn(async move {
+                    for s in scopes {
+                        match svc.list(s, 50).await {
+                            Ok(ms) => {
+                                let label = match s { Scope::Global => "global", Scope::Project => "project" };
+                                let header = format!("── {label} ({}) ──", ms.len());
+                                let _ = tx.send(crate::event::AppEvent::Error(header));
+                                for m in ms {
+                                    let _ = tx.send(crate::event::AppEvent::Error(
+                                        format!("#{} [{}] {}", m.id, m.kind.as_str(), m.content)
+                                    ));
+                                }
+                            }
+                            Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("list: {e}"))); }
+                        }
+                    }
+                });
+            }
+            Command::Reindex | Command::Accept => {
+                self.messages.push(crate::app::ChatEntry::System(
+                    "reindex/accept not implemented yet".into()));
+            }
+            Command::Disable => {
+                self.memory = None;
+                self.memory_disabled_reason = Some("user /memory disable".into());
+                self.messages.push(crate::app::ChatEntry::System(
+                    "memory disabled for this session".into()));
+            }
+        }
+    }
+
+    pub fn toggle_thinking(&mut self) {
+        self.show_thinking = !self.show_thinking;
+    }
+
+    pub fn abort_streaming(&mut self) {
+        if let Some(tx) = self.abort_handle.take() {
+            let _ = tx.send(());
+        }
+        self.waiting_for_response = false;
+        if !self.streaming_buffer.is_empty() {
+            self.finalize_response();
+        }
+        self.messages.push(ChatEntry::System("Generation stopped.".into()));
+    }
+
+    pub fn todo_tool_definitions(&self) -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "todo".into(),
+                    description: "Create a todo list for tracking task progress. Replaces any existing list.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "List of todo item descriptions"
+                            }
+                        },
+                        "required": ["items"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "todo_complete".into(),
+                    description: "Mark a todo item as completed by its zero-based index.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "index": {
+                                "type": "integer",
+                                "description": "Zero-based index of the todo item to mark complete"
+                            }
+                        },
+                        "required": ["index"]
+                    }),
+                },
+            },
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: FunctionDefinition {
+                    name: "wipe_todo".into(),
+                    description: "Clear the entire todo list to start fresh.".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {}
+                    }),
+                },
+            },
+        ]
+    }
+
+    pub fn handle_todo_tool(&mut self, arguments: &str) -> String {
+        #[derive(serde::Deserialize)]
+        struct TodoArgs {
+            items: Vec<String>,
+        }
+        match serde_json::from_str::<TodoArgs>(arguments) {
+            Ok(args) => {
+                let count = args.items.len();
+                self.todo_items = args
+                    .items
+                    .into_iter()
+                    .map(|text| TodoItem { text, done: false })
+                    .collect();
+                format!("Added {count} items")
+            }
+            Err(e) => format!("Invalid todo arguments: {e}"),
+        }
+    }
+
+    pub fn handle_todo_complete(&mut self, arguments: &str) -> Result<String, String> {
+        #[derive(serde::Deserialize)]
+        struct CompleteArgs {
+            index: usize,
+        }
+        match serde_json::from_str::<CompleteArgs>(arguments) {
+            Ok(args) => {
+                if let Some(item) = self.todo_items.get_mut(args.index) {
+                    item.done = true;
+                    Ok(format!("Completed: {}", item.text))
+                } else {
+                    Err(format!("Invalid todo index: {}", args.index))
+                }
+            }
+            Err(e) => Err(format!("Invalid todo_complete arguments: {e}")),
+        }
+    }
+
+    pub fn handle_wipe_todo(&mut self) -> String {
+        self.todo_items.clear();
+        "Todo list cleared".into()
+    }
+
     #[cfg(not(tarpaulin_include))]
-    fn start_streaming(&self) {
+    fn start_streaming(&mut self) {
+        self.waiting_for_response = true;
+        self.streaming_token_count = 0;
         let mut tool_defs = self.tool_registry.definitions();
         tool_defs.extend(self.mcp_tool_defs.clone());
+        tool_defs.extend(self.todo_tool_definitions());
+        tool_defs.push(crate::subagent::tool_definition());
 
         let request = ChatRequest {
             model: self.active_model.clone(),
@@ -384,9 +811,12 @@ impl App {
     pub fn handle_stream_event(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::Token(text) => {
+                self.waiting_for_response = false;
+                self.streaming_token_count += 1;
                 self.streaming_buffer.push_str(&text);
             }
             StreamEvent::ToolCallDelta(delta) => {
+                self.waiting_for_response = false;
                 let entry = self
                     .assembling_tool_calls
                     .entry(delta.index)
@@ -410,6 +840,9 @@ impl App {
                     }
                 }
             }
+            StreamEvent::Usage(usage) => {
+                self.last_token_usage = Some(usage);
+            }
             StreamEvent::Done => {
                 self.finalize_response();
             }
@@ -417,9 +850,28 @@ impl App {
     }
 
     fn finalize_response(&mut self) {
+        self.waiting_for_response = false;
         // Reset thinking state in case stream ended mid-think
         self.in_thinking = false;
         self.thinking_buffer.clear();
+
+        // If the server didn't provide usage stats (e.g. Ollama streaming),
+        // build approximate usage from what we can observe.
+        if self.last_token_usage.is_none() && self.streaming_token_count > 0 {
+            // Rough estimate: ~4 chars per token for prompt context
+            let prompt_estimate = self
+                .conversation
+                .iter()
+                .filter_map(|m| m.content.as_ref())
+                .map(|c| c.len() as u32 / 4)
+                .sum::<u32>();
+            let completion = self.streaming_token_count;
+            self.last_token_usage = Some(Usage {
+                prompt_tokens: prompt_estimate,
+                completion_tokens: completion,
+                total_tokens: prompt_estimate + completion,
+            });
+        }
 
         if !self.streaming_buffer.is_empty() {
             let text = std::mem::take(&mut self.streaming_buffer);
@@ -442,14 +894,20 @@ impl App {
                         let thinking = &remaining[..think_end];
                         if !thinking.trim().is_empty() {
                             self.messages
-                                .push(ChatEntry::Thinking(thinking.trim().to_string()));
+                                .push(ChatEntry::Thinking {
+                                    content: thinking.trim().to_string(),
+                                    collapsed: false,
+                                });
                         }
                         remaining = &remaining[think_end + "</think>".len()..];
                     } else {
                         // Unclosed think tag — treat rest as thinking
                         if !remaining.trim().is_empty() {
                             self.messages
-                                .push(ChatEntry::Thinking(remaining.trim().to_string()));
+                                .push(ChatEntry::Thinking {
+                                    content: remaining.trim().to_string(),
+                                    collapsed: false,
+                                });
                         }
                         remaining = "";
                     }
@@ -468,10 +926,23 @@ impl App {
             // so the model retains its reasoning context
             self.conversation.push(Message {
                 role: "assistant".into(),
-                content: Some(text),
+                content: Some(text.clone()),
                 tool_calls: None,
                 tool_call_id: None,
             });
+
+            // Archive assistant turn
+            if let (Some(svc), Some(sid)) = (&self.memory, self.memory_session_id) {
+                let final_text = text;
+                if !final_text.trim().is_empty() {
+                    let svc = svc.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = svc.archive_turn(sid, "assistant", final_text).await {
+                            eprintln!("[memory] archive assistant turn: {e}");
+                        }
+                    });
+                }
+            }
         }
 
         if !self.assembling_tool_calls.is_empty() {
@@ -505,7 +976,7 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            format!("{} {}", tool_name, tc.function.arguments)
+            tc.function.arguments.clone()
         };
 
         // All built-in tool calls go through the permission system. Use the
@@ -516,7 +987,7 @@ impl App {
             shell::extract_command(&tc.function.arguments)
                 .unwrap_or_else(|| tc.function.arguments.clone())
         } else {
-            command_display.clone()
+            format!("{} {}", tool_name, tc.function.arguments)
         };
 
         if self.yolo
@@ -552,6 +1023,103 @@ impl App {
         let arguments = tc.function.arguments.clone();
         let call_id = tc.id.clone();
         let tx = self.event_tx.clone();
+
+        // Todo tools: inline state mutation, no async needed
+        match tool_name.as_str() {
+            "todo" => {
+                let result = self.handle_todo_tool(&arguments);
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "todo_complete" => {
+                let (result, success) = match self.handle_todo_complete(&arguments) {
+                    Ok(msg) => (msg, true),
+                    Err(msg) => (msg, false),
+                };
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success,
+                });
+                return;
+            }
+            "wipe_todo" => {
+                let result = self.handle_wipe_todo();
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "subagent" => {
+                match crate::subagent::parse_args(&arguments) {
+                    Ok(args) => {
+                        self.subagent_call_id = Some(call_id);
+                        self.subagents_pending = args.agents.len();
+                        self.subagent_states = args.agents.iter().enumerate().map(|(i, spec)| {
+                            crate::subagent::SubagentState::new(i, spec.system.as_deref(), &spec.prompt)
+                        }).collect();
+
+                        let mut tool_defs = self.tool_registry.definitions();
+                        tool_defs.extend(self.mcp_tool_defs.clone());
+                        tool_defs.extend(self.todo_tool_definitions());
+                        tool_defs.push(crate::subagent::tool_definition());
+
+                        for state in &self.subagent_states {
+                            let index = state.index;
+                            let request = ChatRequest {
+                                model: self.active_model.clone(),
+                                messages: state.conversation.clone(),
+                                stream: true,
+                                tools: if tool_defs.is_empty() { None } else { Some(tool_defs.clone()) },
+                                think: true,
+                            };
+                            let tx = self.event_tx.clone();
+                            let server = self.api_client.server().clone();
+                            tokio::spawn(async move {
+                                let client = ApiClient::new(server);
+                                let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+                                let tx2 = tx.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = client.chat_stream(request, stream_tx).await {
+                                        let _ = tx2.send(AppEvent::Error(format!("[agent-{index}] {e}")));
+                                    }
+                                });
+                                while let Some(event) = stream_rx.recv().await {
+                                    let _ = tx.send(AppEvent::SubagentStream { index, event });
+                                }
+                            });
+                        }
+
+                        for state in &self.subagent_states {
+                            let prompt_preview = state
+                                .conversation
+                                .last()
+                                .and_then(|m| m.content.as_deref())
+                                .unwrap_or("");
+                            self.messages.push(ChatEntry::SubagentOutput {
+                                index: state.index,
+                                text: format!("Started ({})", prompt_preview),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::ToolResult {
+                            tool_call_id: call_id,
+                            result: e,
+                            success: false,
+                        });
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
 
         // MCP tools
         if tool_name.starts_with("mcp_") {
@@ -608,8 +1176,12 @@ impl App {
             let child = tokio::process::Command::new("sh")
                 .arg("-c")
                 .arg(&command)
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                .env("CI", "true")
+                .env("DEBIAN_FRONTEND", "noninteractive")
+                .env("npm_config_yes", "true")
                 .spawn();
 
             match child {
@@ -622,7 +1194,7 @@ impl App {
                     let cid_err = call_id.clone();
 
                     // Stream stdout lines
-                    if let Some(stdout) = stdout {
+                    let stdout_handle = stdout.map(|stdout| {
                         let tx = tx_out;
                         let cid = cid_out;
                         tokio::spawn(async move {
@@ -639,11 +1211,11 @@ impl App {
                                 });
                                 line.clear();
                             }
-                        });
-                    }
+                        })
+                    });
 
                     // Stream stderr lines
-                    if let Some(stderr) = stderr {
+                    let stderr_handle = stderr.map(|stderr| {
                         let tx = tx_err;
                         let cid = cid_err;
                         tokio::spawn(async move {
@@ -660,20 +1232,38 @@ impl App {
                                 });
                                 line.clear();
                             }
-                        });
-                    }
+                        })
+                    });
 
-                    // Wait for process to finish, then send final ToolResult
+                    // Wait for process exit with timeout, then drain readers
+                    // before sending ToolResult so all output chunks are queued
+                    // in the channel ahead of the result event.
                     let tx_done = tx.clone();
                     tokio::spawn(async move {
-                        let status = child.wait().await;
-                        let (success, code) = match &status {
-                            Ok(s) => (s.success(), s.code()),
-                            Err(_) => (false, None),
+                        let timeout = tokio::time::timeout(
+                            std::time::Duration::from_secs(120),
+                            child.wait(),
+                        );
+                        let (success, code, timed_out) = match timeout.await {
+                            Ok(Ok(s)) => (s.success(), s.code(), false),
+                            Ok(Err(_)) => (false, None, false),
+                            Err(_) => {
+                                // Timeout — kill the process
+                                let _ = child.kill().await;
+                                (false, None, true)
+                            }
                         };
+                        if let Some(h) = stdout_handle {
+                            let _ = h.await;
+                        }
+                        if let Some(h) = stderr_handle {
+                            let _ = h.await;
+                        }
                         let _ = tx_done.send(AppEvent::ToolResult {
                             tool_call_id: call_id,
-                            result: if success {
+                            result: if timed_out {
+                                "(command timed out after 120s)".into()
+                            } else if success {
                                 "(command completed)".into()
                             } else {
                                 format!("(command exited with {:?})", code)
@@ -738,12 +1328,30 @@ impl App {
         };
         self.messages.push(ChatEntry::ToolOutput(display));
 
+        // Track consecutive errors to break infinite retry loops
+        if success {
+            self.consecutive_errors = 0;
+        } else {
+            self.consecutive_errors += 1;
+        }
+
         // Send the full output to the model
-        let content = if success {
+        let mut content = if success {
             full_output
         } else {
             format!("Error: {}", result)
         };
+
+        // After repeated failures, nudge the model to change strategy
+        if self.consecutive_errors >= 3 {
+            content.push_str(&format!(
+                "\n\n[SYSTEM: {} consecutive tool errors. \
+                 Stop repeating the same approach — analyze the error messages \
+                 and try a fundamentally different strategy.]",
+                self.consecutive_errors
+            ));
+        }
+
         self.conversation.push(Message {
             role: "tool".into(),
             content: Some(content),
@@ -751,6 +1359,323 @@ impl App {
             tool_call_id: Some(tool_call_id),
         });
         self.process_next_tool_call();
+    }
+
+    pub fn handle_subagent_stream(&mut self, index: usize, event: StreamEvent) {
+        if index >= self.subagent_states.len() || self.subagent_states[index].done {
+            return;
+        }
+        match event {
+            StreamEvent::Token(text) => {
+                self.subagent_states[index].streaming_buffer.push_str(&text);
+                self.messages.push(ChatEntry::SubagentOutput { index, text });
+            }
+            StreamEvent::ToolCallDelta(delta) => {
+                let state = &mut self.subagent_states[index];
+                let entry = state.assembling_tool_calls
+                    .entry(delta.index)
+                    .or_insert_with(|| ToolCall {
+                        id: String::new(),
+                        call_type: "function".into(),
+                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                    });
+                if let Some(id) = delta.id { entry.id = id; }
+                if let Some(ref fc) = delta.function {
+                    if let Some(ref name) = fc.name { entry.function.name.push_str(name); }
+                    if let Some(ref args) = fc.arguments { entry.function.arguments.push_str(args); }
+                }
+            }
+            StreamEvent::Usage(_) => {}
+            StreamEvent::Done => {
+                self.finalize_subagent(index);
+            }
+        }
+    }
+
+    fn finalize_subagent(&mut self, index: usize) {
+        let state = &mut self.subagent_states[index];
+        if !state.streaming_buffer.is_empty() {
+            let text = std::mem::take(&mut state.streaming_buffer);
+            state.result_parts.push(text.clone());
+            state.conversation.push(Message {
+                role: "assistant".into(),
+                content: Some(text),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        if !state.assembling_tool_calls.is_empty() {
+            let mut calls: Vec<(u32, ToolCall)> = state.assembling_tool_calls.drain().collect();
+            calls.sort_by_key(|(idx, _)| *idx);
+            let tool_calls: Vec<ToolCall> = calls.into_iter().map(|(_, tc)| tc).collect();
+            state.conversation.push(Message {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(tool_calls.clone()),
+                tool_call_id: None,
+            });
+            state.pending_tool_calls = tool_calls;
+            self.process_subagent_tool_call(index);
+        } else {
+            self.subagent_states[index].done = true;
+            self.subagents_pending = self.subagents_pending.saturating_sub(1);
+            self.check_all_subagents_done();
+        }
+    }
+
+    fn check_all_subagents_done(&mut self) {
+        if self.subagents_pending > 0 { return; }
+        let mut combined = String::new();
+        for state in &self.subagent_states {
+            combined.push_str(&format!("[agent-{} result]\n", state.index));
+            combined.push_str(&state.result_parts.join("\n"));
+            combined.push_str("\n\n");
+        }
+        let combined = combined.trim().to_string();
+        if let Some(call_id) = self.subagent_call_id.take() {
+            let _ = self.event_tx.send(AppEvent::ToolResult {
+                tool_call_id: call_id,
+                result: combined,
+                success: true,
+            });
+        }
+        // States remain accessible until the next subagent dispatch overwrites
+        // them; cleared in execute_tool_call when a new subagent invocation
+        // begins so that concurrent test assertions can still read done flags.
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn process_subagent_tool_call(&mut self, index: usize) {
+        let state = &mut self.subagent_states[index];
+        let tc = match state.pending_tool_calls.first() {
+            Some(tc) => tc.clone(),
+            None => {
+                // No more tool calls — continue streaming
+                self.start_subagent_streaming(index);
+                return;
+            }
+        };
+
+        let tool_name = &tc.function.name;
+        let command_display = if tool_name == "shell" {
+            shell::extract_command(&tc.function.arguments)
+                .unwrap_or_else(|| tc.function.arguments.clone())
+        } else {
+            tc.function.arguments.clone()
+        };
+
+        let permission_key = if tool_name == "shell" {
+            shell::extract_command(&tc.function.arguments)
+                .unwrap_or_else(|| tc.function.arguments.clone())
+        } else {
+            format!("{} {}", tool_name, tc.function.arguments)
+        };
+
+        self.messages.push(ChatEntry::SubagentOutput {
+            index,
+            text: format!("⚙ {} {}", tool_name, command_display),
+        });
+
+        if self.yolo
+            || self.session_allow.contains(tool_name.as_str())
+            || self.permissions.is_allowed(&permission_key)
+        {
+            self.execute_subagent_tool_call(index, tc);
+        } else {
+            self.messages.push(ChatEntry::ToolCall {
+                name: format!("[agent-{}] {}", index, tool_name),
+                command: command_display.clone(),
+                status: "pending".into(),
+            });
+            self.pending_permission = Some(PendingPermission {
+                tool_name: tool_name.clone(),
+                command: command_display,
+                tool_call_id: tc.id.clone(),
+                arguments: tc.function.arguments.clone(),
+            });
+        }
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn execute_subagent_tool_call(&mut self, index: usize, tc: ToolCall) {
+        let state = &mut self.subagent_states[index];
+        state.pending_tool_calls.remove(0);
+
+        let tool_name = tc.function.name.clone();
+        let arguments = tc.function.arguments.clone();
+        let call_id = tc.id.clone();
+        let tx = self.event_tx.clone();
+
+        // Todo tools — inline state mutation
+        match tool_name.as_str() {
+            "todo" => {
+                let result = self.handle_todo_tool(&arguments);
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "todo_complete" => {
+                let (result, success) = match self.handle_todo_complete(&arguments) {
+                    Ok(msg) => (msg, true),
+                    Err(msg) => (msg, false),
+                };
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success,
+                });
+                return;
+            }
+            "wipe_todo" => {
+                let result = self.handle_wipe_todo();
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            _ => {}
+        }
+
+        // Shell tool — use simple output capture to avoid interleaving
+        if tool_name == "shell" {
+            let args: Result<serde_json::Value, _> = serde_json::from_str(&arguments);
+            let command = args
+                .ok()
+                .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                .unwrap_or(arguments.clone());
+
+            tokio::spawn(async move {
+                let output = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                    .await;
+                let result = match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let mut r = String::new();
+                        if !stdout.is_empty() { r.push_str(&stdout); }
+                        if !stderr.is_empty() {
+                            if !r.is_empty() { r.push('\n'); }
+                            r.push_str("stderr: ");
+                            r.push_str(&stderr);
+                        }
+                        if r.is_empty() { r.push_str("(no output)"); }
+                        r
+                    }
+                    Err(e) => e.to_string(),
+                };
+                let _ = tx.send(AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+            });
+            return;
+        }
+
+        // Other built-in tools
+        tokio::spawn(async move {
+            let result = match tool_name.as_str() {
+                "read_file" => ReadFileTool.execute(&arguments).await,
+                "write_file" => WriteFileTool.execute(&arguments).await,
+                "edit_file" => EditFileTool.execute(&arguments).await,
+                "list_files" => ListFilesTool.execute(&arguments).await,
+                _ => Err(anyhow::anyhow!("unknown tool")),
+            };
+            match result {
+                Ok(output) => {
+                    let _ = tx.send(AppEvent::SubagentToolResult {
+                        index,
+                        tool_call_id: call_id,
+                        result: output,
+                        success: true,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::SubagentToolResult {
+                        index,
+                        tool_call_id: call_id,
+                        result: e.to_string(),
+                        success: false,
+                    });
+                }
+            }
+        });
+    }
+
+    pub fn handle_subagent_tool_result(
+        &mut self,
+        index: usize,
+        tool_call_id: String,
+        result: String,
+        success: bool,
+    ) {
+        if index >= self.subagent_states.len() {
+            return;
+        }
+
+        let display = if success {
+            result.clone()
+        } else {
+            format!("Error: {result}")
+        };
+        self.messages.push(ChatEntry::SubagentOutput { index, text: display });
+
+        let content = if success { result } else { format!("Error: {result}") };
+        let state = &mut self.subagent_states[index];
+        state.conversation.push(Message {
+            role: "tool".into(),
+            content: Some(content),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id),
+        });
+
+        self.process_subagent_tool_call(index);
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    fn start_subagent_streaming(&mut self, index: usize) {
+        let state = &self.subagent_states[index];
+        let mut tool_defs = self.tool_registry.definitions();
+        tool_defs.extend(self.mcp_tool_defs.clone());
+        tool_defs.extend(self.todo_tool_definitions());
+        tool_defs.push(crate::subagent::tool_definition());
+
+        let request = ChatRequest {
+            model: self.active_model.clone(),
+            messages: state.conversation.clone(),
+            stream: true,
+            tools: if tool_defs.is_empty() { None } else { Some(tool_defs) },
+            think: true,
+        };
+
+        let tx = self.event_tx.clone();
+        let server = self.api_client.server().clone();
+        tokio::spawn(async move {
+            let client = ApiClient::new(server);
+            let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+            let tx2 = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = client.chat_stream(request, stream_tx).await {
+                    let _ = tx2.send(AppEvent::Error(format!("[agent-{index}] {e}")));
+                }
+            });
+            while let Some(event) = stream_rx.recv().await {
+                let _ = tx.send(AppEvent::SubagentStream { index, event });
+            }
+        });
     }
 
     pub fn handle_pattern_submit(&mut self) {
@@ -948,7 +1873,7 @@ mod app_tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let config = AppConfig::default();
         let mcp_config = McpConfig::default();
-        App::new(config, mcp_config, tx).unwrap()
+        App::new(config, mcp_config, tx, None).unwrap()
     }
 
     // --- submit_message ---
@@ -1083,11 +2008,19 @@ mod app_tests {
     }
 
     #[test]
+    fn server_switch_resets_health() {
+        let mut app = test_app();
+        app.server_healthy = Some(true);
+        app.handle_slash_command("/server local");
+        assert!(app.server_healthy.is_none());
+    }
+
+    #[test]
     fn slash_tools() {
         let mut app = test_app();
         app.handle_slash_command("/tools");
         assert!(
-            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5"))
+            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5") && s.contains("Todo tools:"))
         );
     }
 
@@ -1177,6 +2110,30 @@ mod app_tests {
         );
     }
 
+    // --- server_healthy and last_token_usage defaults ---
+
+    #[test]
+    fn app_new_health_and_usage_defaults() {
+        let app = test_app();
+        assert!(app.server_healthy.is_none());
+        assert!(app.last_token_usage.is_none());
+    }
+
+    #[test]
+    fn handle_stream_usage_sets_last_token_usage() {
+        let mut app = test_app();
+        let usage = crate::api::types::Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        app.handle_stream_event(StreamEvent::Usage(usage));
+        let u = app.last_token_usage.as_ref().unwrap();
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.completion_tokens, 50);
+        assert_eq!(u.total_tokens, 150);
+    }
+
     // --- handle_stream_event ---
 
     #[test]
@@ -1186,6 +2143,40 @@ mod app_tests {
         assert_eq!(app.streaming_buffer, "Hello");
         app.handle_stream_event(StreamEvent::Token(" World".into()));
         assert_eq!(app.streaming_buffer, "Hello World");
+    }
+
+    #[test]
+    fn waiting_for_response_cleared_by_token() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        app.handle_stream_event(StreamEvent::Token("hi".into()));
+        assert!(!app.waiting_for_response);
+    }
+
+    #[test]
+    fn waiting_for_response_cleared_by_tool_call_delta() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        let delta = DeltaToolCall {
+            index: 0,
+            id: Some("call_1".into()),
+            call_type: Some("function".into()),
+            function: Some(DeltaFunctionCall {
+                name: Some("shell".into()),
+                arguments: Some("{}".into()),
+            }),
+        };
+        app.handle_stream_event(StreamEvent::ToolCallDelta(delta));
+        assert!(!app.waiting_for_response);
+    }
+
+    #[test]
+    fn waiting_for_response_cleared_by_finalize() {
+        let mut app = test_app();
+        app.waiting_for_response = true;
+        app.streaming_buffer = "answer".into();
+        app.handle_stream_event(StreamEvent::Done);
+        assert!(!app.waiting_for_response);
     }
 
     #[test]
@@ -1245,8 +2236,8 @@ mod app_tests {
         let mut has_assistant = false;
         for entry in &app.messages {
             match entry {
-                ChatEntry::Thinking(s) => {
-                    assert_eq!(s, "Let me reason about this.");
+                ChatEntry::Thinking { content, .. } => {
+                    assert_eq!(content, "Let me reason about this.");
                     has_thinking = true;
                 }
                 ChatEntry::Assistant(s) => {
@@ -1266,7 +2257,7 @@ mod app_tests {
         app.streaming_buffer = "<think>Still thinking...".into();
         app.finalize_response();
 
-        assert!(matches!(&app.messages[0], ChatEntry::Thinking(s) if s == "Still thinking..."));
+        assert!(matches!(&app.messages[0], ChatEntry::Thinking { content, .. } if content == "Still thinking..."));
     }
 
     #[test]
@@ -1287,7 +2278,7 @@ mod app_tests {
 
         // Whitespace-only thinking should not produce a Thinking entry
         for entry in &app.messages {
-            assert!(!matches!(entry, ChatEntry::Thinking(_)));
+            assert!(!matches!(entry, ChatEntry::Thinking { .. }));
         }
         assert!(
             matches!(app.messages.last(), Some(ChatEntry::Assistant(s)) if s == "Actual answer.")
@@ -1304,7 +2295,7 @@ mod app_tests {
         let mut found_assistant = false;
         for entry in &app.messages {
             match entry {
-                ChatEntry::Thinking(s) if s == "reasoning" => found_thinking = true,
+                ChatEntry::Thinking { content, .. } if content == "reasoning" => found_thinking = true,
                 ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => {
                     found_assistant = true
                 }
@@ -1703,7 +2694,7 @@ mod app_tests {
         config.servers.clear();
         config.defaults.server = "nonexistent".into();
         let mcp_config = McpConfig::default();
-        let app = App::new(config, mcp_config, tx).unwrap();
+        let app = App::new(config, mcp_config, tx, None).unwrap();
 
         // Should fall back to default "Local Ollama"
         assert_eq!(app.active_server_name, "Local Ollama");
@@ -1719,7 +2710,7 @@ mod app_tests {
         assert!(app.streaming_buffer.is_empty());
         assert_eq!(app.active_model, "llama3:8b");
         assert_eq!(app.active_server_name, "Local Ollama");
-        assert_eq!(app.tool_count, 5);
+        assert_eq!(app.tool_count, 9); // 5 built-in + 3 todo + 1 subagent
         assert!(!app.should_quit);
         assert!(!app.yolo);
         assert!(app.pending_permission.is_none());
@@ -1735,6 +2726,148 @@ mod app_tests {
         assert!(app.session_allow.contains("edit_file"));
         assert!(app.session_allow.contains("list_files"));
         assert!(!app.session_allow.contains("shell"));
+    }
+
+    #[test]
+    fn todo_items_start_empty() {
+        let app = test_app();
+        assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn todo_tool_definitions_are_present() {
+        let app = test_app();
+        let defs = app.todo_tool_definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+        assert!(names.contains(&"todo"));
+        assert!(names.contains(&"todo_complete"));
+        assert!(names.contains(&"wipe_todo"));
+        assert_eq!(defs.len(), 3);
+    }
+
+    #[test]
+    fn handle_todo_tool_sets_items() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["first","second","third"]}"#);
+        assert_eq!(app.todo_items.len(), 3);
+        assert_eq!(app.todo_items[0].text, "first");
+        assert_eq!(app.todo_items[1].text, "second");
+        assert_eq!(app.todo_items[2].text, "third");
+        assert!(app.todo_items.iter().all(|t| !t.done));
+    }
+
+    #[test]
+    fn handle_todo_tool_replaces_existing() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["old"]}"#);
+        app.handle_todo_tool(r#"{"items":["new1","new2"]}"#);
+        assert_eq!(app.todo_items.len(), 2);
+        assert_eq!(app.todo_items[0].text, "new1");
+    }
+
+    #[test]
+    fn handle_todo_complete_marks_done() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a","b","c"]}"#);
+        let result = app.handle_todo_complete(r#"{"index":1}"#);
+        assert!(app.todo_items[1].done);
+        assert!(!app.todo_items[0].done);
+        assert!(result.unwrap().contains("Completed"));
+    }
+
+    #[test]
+    fn handle_todo_complete_out_of_bounds() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a"]}"#);
+        let result = app.handle_todo_complete(r#"{"index":5}"#);
+        assert!(result.unwrap_err().contains("Invalid"));
+    }
+
+    #[test]
+    fn handle_todo_tool_invalid_json() {
+        let mut app = test_app();
+        let result = app.handle_todo_tool("not json");
+        assert!(result.contains("Invalid todo arguments"));
+        assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn handle_todo_complete_invalid_json() {
+        let mut app = test_app();
+        let result = app.handle_todo_complete(r#"{"index": "not a number"}"#);
+        assert!(result.unwrap_err().contains("Invalid todo_complete arguments"));
+    }
+
+    #[test]
+    fn handle_wipe_todo_clears_list() {
+        let mut app = test_app();
+        app.handle_todo_tool(r#"{"items":["a","b"]}"#);
+        app.handle_wipe_todo();
+        assert!(app.todo_items.is_empty());
+    }
+
+    #[test]
+    fn subagent_state_defaults() {
+        let app = test_app();
+        assert!(app.subagent_states.is_empty());
+        assert_eq!(app.subagents_pending, 0);
+        assert!(app.subagent_call_id.is_none());
+    }
+
+    #[test]
+    fn handle_subagent_token_appends_to_buffer() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
+        assert_eq!(app.subagent_states[0].streaming_buffer, "hello");
+    }
+
+    #[test]
+    fn handle_subagent_token_adds_chat_entry() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
+        assert!(matches!(
+            app.messages.last(),
+            Some(ChatEntry::SubagentOutput { index: 0, text }) if text == "hello"
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_subagent_tool_result_adds_to_conversation() {
+        let mut app = test_app();
+        let mut state = crate::subagent::SubagentState::new(0, None, "test");
+        state.pending_tool_calls.push(ToolCall {
+            id: "tc_1".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        });
+        app.subagent_states.push(state);
+        app.subagents_pending = 1;
+        app.subagent_call_id = Some("parent_call".into());
+
+        app.handle_subagent_tool_result(0, "tc_1".into(), "file contents".into(), true);
+        let last_msg = app.subagent_states[0].conversation.last().unwrap();
+        assert_eq!(last_msg.role, "tool");
+        assert_eq!(last_msg.content.as_deref(), Some("file contents"));
+        assert_eq!(last_msg.tool_call_id.as_deref(), Some("tc_1"));
+    }
+
+    #[test]
+    fn subagent_done_without_tools_marks_complete() {
+        let mut app = test_app();
+        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagents_pending = 1;
+        app.subagent_call_id = Some("call_1".into());
+        app.subagent_states[0].streaming_buffer = "result text".into();
+        app.handle_subagent_stream(0, StreamEvent::Done);
+        assert!(app.subagent_states[0].done);
+        assert_eq!(app.subagents_pending, 0);
     }
 }
 

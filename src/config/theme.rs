@@ -14,6 +14,9 @@ pub struct Theme {
     pub muted: Color,
     pub bg: Color,
     pub fg: Color,
+    pub thinking_header: Color,
+    pub thinking_text: Color,
+    pub thinking_border: Color,
 }
 
 impl Theme {
@@ -25,11 +28,14 @@ impl Theme {
             tool_name: Color::Rgb(192, 132, 252),
             tool_ok: Color::Rgb(52, 211, 153),
             tool_denied: Color::Rgb(248, 113, 113),
-            code_bg: Color::Rgb(13, 17, 23),
-            border: Color::Rgb(55, 65, 81),
-            muted: Color::Rgb(107, 114, 128),
-            bg: Color::Rgb(17, 24, 39),
+            code_bg: Color::Rgb(22, 28, 40),
+            border: Color::Rgb(65, 75, 92),
+            muted: Color::Rgb(120, 128, 142),
+            bg: Color::Rgb(30, 38, 55),
             fg: Color::Rgb(229, 231, 235),
+            thinking_header: Color::Rgb(251, 191, 36),
+            thinking_text: Color::Rgb(180, 180, 180),
+            thinking_border: Color::Rgb(251, 191, 36),
         }
     }
 
@@ -46,6 +52,9 @@ impl Theme {
             muted: Color::Rgb(156, 163, 175),
             bg: Color::Rgb(250, 250, 250),
             fg: Color::Rgb(31, 41, 55),
+            thinking_header: Color::Rgb(217, 119, 6),
+            thinking_text: Color::Rgb(87, 87, 87),
+            thinking_border: Color::Rgb(217, 119, 6),
         }
     }
 
@@ -68,6 +77,9 @@ impl Theme {
                     "muted" => theme.muted = color,
                     "bg" => theme.bg = color,
                     "fg" => theme.fg = color,
+                    "thinking_header" => theme.thinking_header = color,
+                    "thinking_text" => theme.thinking_text = color,
+                    "thinking_border" => theme.thinking_border = color,
                     _ => {}
                 }
             }
@@ -116,10 +128,13 @@ mod tests {
     fn dark_theme_expected_colors() {
         let theme = Theme::dark();
         assert_eq!(theme.accent, Color::Rgb(129, 140, 248));
-        assert_eq!(theme.bg, Color::Rgb(17, 24, 39));
+        assert_eq!(theme.bg, Color::Rgb(30, 38, 55));
         assert_eq!(theme.fg, Color::Rgb(229, 231, 235));
         assert_eq!(theme.tool_ok, Color::Rgb(52, 211, 153));
         assert_eq!(theme.tool_denied, Color::Rgb(248, 113, 113));
+        assert_eq!(theme.thinking_header, Color::Rgb(251, 191, 36));
+        assert_eq!(theme.thinking_text, Color::Rgb(180, 180, 180));
+        assert_eq!(theme.thinking_border, Color::Rgb(251, 191, 36));
     }
 
     #[test]
@@ -130,6 +145,9 @@ mod tests {
         assert_eq!(theme.fg, Color::Rgb(31, 41, 55));
         assert_eq!(theme.tool_ok, Color::Rgb(5, 150, 105));
         assert_eq!(theme.tool_denied, Color::Rgb(220, 38, 38));
+        assert_eq!(theme.thinking_header, Color::Rgb(217, 119, 6));
+        assert_eq!(theme.thinking_text, Color::Rgb(87, 87, 87));
+        assert_eq!(theme.thinking_border, Color::Rgb(217, 119, 6));
     }
 
     #[test]

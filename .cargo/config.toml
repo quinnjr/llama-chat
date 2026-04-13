@@ -1,0 +1,14 @@
+[env]
+# usearch (via sqlite-vector-rs) requires C++17. Some distros (Arch
+# Linux, for example) set a system-wide CXXFLAGS that includes
+# -std=c++11 which gets appended *after* the build script's own
+# -std=c++17, causing the C++ build to fail.
+#
+# Clearing CXXFLAGS at the Cargo level lets the usearch build script's
+# own -std=c++17 win. Cargo itself still honours the Rust release
+# profile, so this does not affect optimisation levels.
+CXXFLAGS = { value = "", force = true }
+
+# sqlite-vector-rs needs to load its extension library at runtime.
+# Point it to the built library so tests can find it automatically.
+SQLITE_VECTOR_RS_LIB = { value = "target/debug/libsqlite_vector_rs.so", relative = true }

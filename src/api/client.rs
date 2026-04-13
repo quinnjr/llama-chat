@@ -7,6 +7,7 @@ use crate::api::stream::parse_sse_line;
 use crate::api::types::*;
 use crate::config::settings::ServerConfig;
 
+#[derive(Clone)]
 pub struct ApiClient {
     http: Client,
     server: ServerConfig,
@@ -93,6 +94,9 @@ impl ApiClient {
                             done_sent = true;
                         }
                     }
+                    if let Some(usage) = resp.usage {
+                        let _ = tx.send(StreamEvent::Usage(usage));
+                    }
                 }
             }
         }
@@ -109,6 +113,7 @@ impl ApiClient {
 pub enum StreamEvent {
     Token(String),
     ToolCallDelta(DeltaToolCall),
+    Usage(crate::api::types::Usage),
     Done,
 }
 

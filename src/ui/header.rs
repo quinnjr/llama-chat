@@ -1,48 +1,95 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
 
 use crate::app::App;
 use crate::config::theme::Theme;
 
 #[cfg(not(tarpaulin_include))]
 pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let left = Span::styled(
-        "llama-chat",
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-    );
+    let version = env!("CARGO_PKG_VERSION");
 
-    let model_span = Span::styled(
-        format!("[{}]", app.active_model),
-        Style::default().fg(theme.tool_ok),
-    );
-    let server_span = Span::styled(
-        format!(" [{}]", app.active_server_name),
-        Style::default().fg(theme.muted),
-    );
-    let tool_span = Span::styled(
-        format!(" [{} tools]", app.tool_count),
-        Style::default().fg(theme.muted),
-    );
+    // Health indicator
+    let (health_dot, health_label, health_color) = match app.server_healthy {
+        Some(true) => ("●", "Online", theme.tool_ok),
+        Some(false) => ("●", "Offline", theme.tool_denied),
+        None => ("●", "Checking", theme.thinking_header),
+    };
 
-    let right_text = format!(
-        "[{}] [{}] [{} tools]",
-        app.active_model, app.active_server_name, app.tool_count
-    );
-    let padding = area.width.saturating_sub(11 + right_text.len() as u16);
+    // Memory indicator
+    let mem_label = if app.memory.is_some() {
+        " [mem]"
+    } else if app.memory_disabled_reason.is_some() {
+        " [mem:off]"
+    } else {
+        ""
+    };
 
-    let line = Line::from(vec![
-        left,
-        Span::raw(" ".repeat(padding as usize)),
-        model_span,
-        server_span,
-        tool_span,
-    ]);
+    // Line 1: model, server, health, memory
+    let mut line1_spans = vec![
+        Span::styled("Model: ", Style::default().fg(theme.muted)),
+        Span::styled(&app.active_model, Style::default().fg(theme.tool_ok)),
+        Span::styled("  Server: ", Style::default().fg(theme.muted)),
+        Span::styled(&app.active_server_name, Style::default().fg(theme.fg)),
+        Span::styled("  Status: ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{health_dot} {health_label}"),
+            Style::default().fg(health_color),
+        ),
+    ];
 
-    let header = Paragraph::new(line).style(Style::default().bg(theme.bg).fg(theme.fg));
+    if !mem_label.is_empty() {
+        line1_spans.push(Span::styled(
+            mem_label,
+            Style::default().fg(theme.tool_ok),
+        ));
+    }
+
+    let line1 = Line::from(line1_spans);
+
+    // Line 2: token usage
+    let line2 = if let Some(ref usage) = app.last_token_usage {
+        Line::from(vec![
+            Span::styled("Tokens: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{} prompt", usage.prompt_tokens),
+                Style::default().fg(theme.fg),
+            ),
+            Span::styled(" / ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{} completion", usage.completion_tokens),
+                Style::default().fg(theme.fg),
+            ),
+            Span::styled(" / ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{} total", usage.total_tokens),
+                Style::default().fg(theme.fg),
+            ),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "Tokens: \u{2014}",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        ))
+    };
+
+    let block = Block::default()
+        .title(format!("llama-chat v{version}"))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border));
+
+    let header = Paragraph::new(vec![line1, line2])
+        .block(block)
+        .style(Style::default().bg(theme.bg));
+
     f.render_widget(header, area);
 }

@@ -2,7 +2,8 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::config::theme::Theme;
@@ -17,10 +18,15 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 
     let line = Line::from(vec![prompt_char, input_text]);
 
-    let input = Paragraph::new(vec![line, Line::from(hints_span)]);
+    let input = Paragraph::new(vec![line, Line::from(hints_span)])
+        .wrap(Wrap { trim: false });
     f.render_widget(input, area);
 
-    let cursor_x = area.x + 2 + app.input_buffer.len() as u16;
-    let cursor_y = area.y;
-    f.set_cursor_position((cursor_x, cursor_y));
+    let width = area.width as usize;
+    if width > 0 {
+        let total_offset = "▸ ".width() + app.input_buffer.width();
+        let cursor_x = area.x + (total_offset % width) as u16;
+        let cursor_y = area.y + (total_offset / width) as u16;
+        f.set_cursor_position((cursor_x, cursor_y));
+    }
 }

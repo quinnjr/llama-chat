@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub defaults: DefaultsConfig,
     #[serde(default)]
     pub theme: ThemeConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -24,6 +26,8 @@ pub struct DefaultsConfig {
     pub server: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default = "default_show_thinking")]
+    pub show_thinking: bool,
 }
 
 fn default_server() -> String {
@@ -32,12 +36,16 @@ fn default_server() -> String {
 fn default_model() -> String {
     "llama3:8b".into()
 }
+fn default_show_thinking() -> bool {
+    true
+}
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             server: default_server(),
             model: default_model(),
+            show_thinking: default_show_thinking(),
         }
     }
 }
@@ -59,6 +67,40 @@ impl Default for ThemeConfig {
         Self {
             preset: default_preset(),
             colors: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MemoryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub embedding_model: String,
+    #[serde(default = "default_embedding_server")]
+    pub embedding_server: String,
+    #[serde(default = "default_top_n")]
+    pub top_n: usize,
+    #[serde(default = "default_decay_half_life")]
+    pub decay_half_life_days: u32,
+    #[serde(default = "default_extraction_on_clear")]
+    pub extraction_on_clear: bool,
+}
+
+fn default_embedding_server() -> String { "local".into() }
+fn default_top_n() -> usize { 8 }
+fn default_decay_half_life() -> u32 { 90 }
+fn default_extraction_on_clear() -> bool { true }
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            embedding_model: String::new(),
+            embedding_server: default_embedding_server(),
+            top_n: default_top_n(),
+            decay_half_life_days: default_decay_half_life(),
+            extraction_on_clear: default_extraction_on_clear(),
         }
     }
 }
@@ -89,6 +131,7 @@ impl Default for AppConfig {
             servers,
             defaults: DefaultsConfig::default(),
             theme: ThemeConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -198,5 +241,33 @@ preset = "light"
         let local = &config.servers["local"];
         assert!(local.api_key.is_none());
         assert_eq!(local.url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn default_memory_config_is_disabled() {
+        let config = AppConfig::default();
+        assert!(!config.memory.enabled);
+        assert_eq!(config.memory.top_n, 8);
+        assert_eq!(config.memory.decay_half_life_days, 90);
+        assert!(config.memory.extraction_on_clear);
+        assert!(config.memory.embedding_model.is_empty());
+    }
+
+    #[test]
+    fn parse_memory_section() {
+        let toml_str = r#"
+[memory]
+enabled = true
+embedding_model = "nomic-embed-text"
+embedding_server = "local"
+top_n = 5
+decay_half_life_days = 30
+extraction_on_clear = false
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.memory.enabled);
+        assert_eq!(config.memory.embedding_model, "nomic-embed-text");
+        assert_eq!(config.memory.top_n, 5);
+        assert!(!config.memory.extraction_on_clear);
     }
 }

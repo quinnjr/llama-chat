@@ -3,7 +3,9 @@ mod app;
 mod config;
 mod event;
 mod mcp;
+mod memory;
 mod skills;
+mod subagent;
 mod tools;
 mod ui;
 
@@ -37,12 +39,43 @@ async fn main() -> Result<()> {
     let config = AppConfig::load(&config_dir.join("config.toml"))?;
     let mcp_config = McpConfig::load(&config_dir.join("mcp.json"))?;
 
+    let project_dir = std::env::current_dir()?;
+    let (memory, memory_disabled_reason) = if config.memory.enabled {
+        match crate::memory::MemoryService::open(&config, &project_dir).await {
+            Ok(svc) => (Some(std::sync::Arc::new(svc)), None),
+            Err(e) => {
+                eprintln!("[memory] disabled: {e}");
+                (None, Some(e.to_string()))
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    let mut app = App::new(config, mcp_config.clone(), event_tx.clone())?;
+    let mut app = App::new(config, mcp_config.clone(), event_tx.clone(), memory.clone())?;
+
+    if let Some(reason) = memory_disabled_reason {
+        app.memory_disabled_reason = Some(reason);
+    }
 
     if yolo {
         app.yolo = true;
+    }
+
+    // Recover orphan sessions on startup
+    if let Some(svc) = memory {
+        let svc = svc.clone();
+        let api = app.api_client.clone();
+        let model = app.active_model.clone();
+        tokio::spawn(async move {
+            if let Ok(n) = svc.recover_orphans(&api, model).await
+                && n > 0
+            {
+                eprintln!("[memory] recovered {n} orphan session(s)");
+            }
+        });
     }
 
     for (name, entry) in &mcp_config.mcp_servers {
@@ -80,10 +113,38 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         loop {
             if ct_event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
-                && let Ok(Event::Key(key)) = ct_event::read()
+                && let Ok(event) = ct_event::read()
             {
-                let _ = input_tx.send(AppEvent::Key(key));
+                match event {
+                    Event::Key(key) => {
+                        let _ = input_tx.send(AppEvent::Key(key));
+                    }
+                    Event::Resize(_, _) => {
+                        let _ = input_tx.send(AppEvent::Resize);
+                    }
+                    _ => {}
+                }
             }
+        }
+    });
+
+    let health_tx = event_tx.clone();
+    let health_server = app.api_client.server().clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        loop {
+            let url = format!("{}/models", health_server.url);
+            let mut req = client.get(&url);
+            if let Some(ref key) = health_server.api_key {
+                req = req.bearer_auth(key);
+            }
+            let healthy = req
+                .timeout(std::time::Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success());
+            let _ = health_tx.send(AppEvent::HealthCheck(healthy));
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
 
@@ -91,6 +152,8 @@ async fn main() -> Result<()> {
         terminal.draw(|f| {
             ui::draw(f, &app, &app.theme.clone());
         })?;
+
+        app.anim_frame = app.anim_frame.wrapping_add(1);
 
         if let Some(event) = event_rx.recv().await {
             match event {
@@ -134,7 +197,25 @@ async fn main() -> Result<()> {
                     } else {
                         match key.code {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                app.should_quit = true;
+                                if app.waiting_for_response {
+                                    app.abort_streaming();
+                                } else {
+                                    app.should_quit = true;
+                                }
+                            }
+                            KeyCode::Char(c @ ('t' | 'T')) => {
+                                if app.waiting_for_response {
+                                    app.toggle_thinking();
+                                } else {
+                                    app.input_buffer.push(c);
+                                }
+                            }
+                            KeyCode::Char(' ') => {
+                                if app.waiting_for_response {
+                                    app.abort_streaming();
+                                } else {
+                                    app.input_buffer.push(' ');
+                                }
                             }
                             KeyCode::Enter => {
                                 app.submit_message();
@@ -202,6 +283,9 @@ async fn main() -> Result<()> {
                         "MCP '{server_name}' failed: {error}"
                     )));
                 }
+                AppEvent::Resize => {
+                    // Redraw with new dimensions happens at top of loop
+                }
                 AppEvent::ModelsLoaded(models) => {
                     if models.is_empty() {
                         app.messages.push(app::ChatEntry::System(
@@ -215,9 +299,37 @@ async fn main() -> Result<()> {
                         )));
                     }
                 }
+                AppEvent::HealthCheck(healthy) => {
+                    app.server_healthy = Some(healthy);
+                }
                 AppEvent::Error(e) => {
                     app.messages
                         .push(app::ChatEntry::System(format!("Error: {e}")));
+                }
+                AppEvent::SubagentStream { index, event } => {
+                    app.handle_subagent_stream(index, event);
+                }
+                AppEvent::SubagentToolResult {
+                    index,
+                    tool_call_id,
+                    result,
+                    success,
+                } => {
+                    app.handle_subagent_tool_result(index, tool_call_id, result, success);
+                }
+                AppEvent::MemoryStatus { disabled, reason } => {
+                    if disabled {
+                        app.memory_disabled_reason = Some(reason);
+                        app.memory = None;
+                        app.memory_session_id = None;
+                    } else if let Some(rest) = reason.strip_prefix("session:")
+                        && let Ok(id) = rest.parse::<i64>()
+                    {
+                        app.memory_session_id = Some(id);
+                    }
+                }
+                AppEvent::MemoryExtractionDone { session_id: _ } => {
+                    app.memory_session_id = None;
                 }
             }
         }
