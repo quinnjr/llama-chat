@@ -1,0 +1,5 @@
+[env]
+# usearch (via sqlite-vector-rs) requires C++17. The system CXXFLAGS on
+# Arch Linux sets -std=c++11 which gets appended *after* the build
+# script's -std=c++17, causing the build to fail. Override it here.
+CXXFLAGS = { value = "-pedantic -fPIC -O2 -fstack-protector -mtune=generic", force = true }

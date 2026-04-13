@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod event;
 mod mcp;
+mod memory;
 mod skills;
 mod subagent;
 mod tools;
