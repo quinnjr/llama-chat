@@ -178,4 +178,91 @@ impl MemoryService {
             Ok(out)
         }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
     }
+
+    /// Starts a new session row in the project DB. Returns session_id.
+    pub async fn begin_session(
+        &self,
+        server: Option<String>,
+        model: Option<String>,
+    ) -> Result<i64, MemoryError> {
+        let store = Arc::clone(&self.project);
+        tokio::task::spawn_blocking(move || -> Result<i64, MemoryError> {
+            let conn = store.conn();
+            let guard = conn.lock().expect("poisoned");
+            guard.execute(
+                "INSERT INTO sessions(started_at, server, model) VALUES (?, ?, ?)",
+                params![now(), server, model],
+            )?;
+            Ok(guard.last_insert_rowid())
+        }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
+    }
+
+    /// Archive one user or assistant message. Chunks the content, embeds each
+    /// chunk, writes all rows in a single transaction. Fire-and-forget caller
+    /// convention: errors log and are swallowed at the App level.
+    pub async fn archive_turn(
+        &self,
+        session_id: i64,
+        role: &str,
+        content: String,
+    ) -> Result<(), MemoryError> {
+        let chunks = crate::memory::chunk::split(&content);
+        if chunks.is_empty() { return Ok(()); }
+
+        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        let embs = self.embed.embed(texts.clone()).await?;
+
+        let store = Arc::clone(&self.project);
+        let role = role.to_string();
+        let token_counts: Vec<i64> = chunks.iter().map(|c| c.token_count as i64).collect();
+
+        tokio::task::spawn_blocking(move || -> Result<(), MemoryError> {
+            let conn = store.conn();
+            let mut guard = conn.lock().expect("poisoned");
+            let tx = guard.transaction()?;
+
+            // Next seq within session.
+            let next_seq: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM chunks WHERE session_id = ?",
+                params![session_id], |r| r.get(0),
+            )?;
+
+            for (i, text) in texts.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO chunks(session_id, seq, role, content, token_count, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    params![session_id, next_seq + i as i64, role, text, token_counts[i], now()],
+                )?;
+                let id = tx.last_insert_rowid();
+                if let Some(ref vs) = embs {
+                    if let Some(v) = vs.get(i) {
+                        let json = serde_json::to_string(v).unwrap();
+                        tx.execute(
+                            "INSERT INTO chunks_vec(rowid, vector)
+                             VALUES (?, vector_from_json(?, 'float4'))",
+                            params![id, json],
+                        )?;
+                    }
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
+    }
+
+    /// Mark a session ended. Called from end-of-session path before extraction.
+    pub async fn end_session_mark(&self, session_id: i64, title: Option<String>)
+        -> Result<(), MemoryError>
+    {
+        let store = Arc::clone(&self.project);
+        tokio::task::spawn_blocking(move || -> Result<(), MemoryError> {
+            let conn = store.conn();
+            let guard = conn.lock().expect("poisoned");
+            guard.execute(
+                "UPDATE sessions SET ended_at = ?, title = COALESCE(?, title) WHERE id = ?",
+                params![now(), title, session_id],
+            )?;
+            Ok(())
+        }).await.map_err(|e| MemoryError::Http(format!("join error: {e}")))?
+    }
 }
