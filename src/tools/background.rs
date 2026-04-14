@@ -639,4 +639,123 @@ mod tests {
     fn bg_run_parse_args_invalid_json() {
         assert!(BgRunTool::parse_args("not json").is_err());
     }
+
+    #[test]
+    fn full_lifecycle_insert_output_complete_drain() {
+        let mut mgr = BackgroundTaskManager::new();
+        let (tx, _rx) = oneshot::channel();
+        let task = BackgroundTask {
+            label: "e2e".into(),
+            tool_name: "shell".into(),
+            arguments: r#"{"command":"echo hello"}"#.into(),
+            status: BackgroundTaskStatus::Running,
+            output_chunks: vec![],
+            result: None,
+            success: None,
+            started_at: Instant::now(),
+            finished_at: None,
+            abort_tx: Some(tx),
+            acknowledged: false,
+        };
+
+        // Insert
+        mgr.insert(task).unwrap();
+        assert_eq!(mgr.active_count(), 1);
+        assert!(mgr.has_running_tasks());
+
+        // Accumulate output
+        mgr.append_output("e2e", "hello\n".into());
+
+        // Check status while running
+        let status = mgr.status_one("e2e").unwrap();
+        assert!(status.contains("Running"));
+        assert!(status.contains("hello"));
+
+        // Complete
+        mgr.complete("e2e", "(command completed)".into(), true);
+        assert_eq!(mgr.active_count(), 0);
+        assert!(!mgr.has_running_tasks());
+
+        // Drain completed queue
+        let completed = mgr.drain_completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].label, "e2e");
+        assert!(completed[0].success);
+        assert_eq!(completed[0].result, "(command completed)");
+
+        // Second drain is empty
+        assert!(mgr.drain_completed().is_empty());
+
+        // Status shows completed, marks acknowledged
+        let status = mgr.status_one("e2e").unwrap();
+        assert!(status.contains("Completed"));
+
+        // Clear acknowledged removes it
+        mgr.clear_acknowledged();
+        assert!(mgr.status_one("e2e").is_err());
+    }
+
+    #[test]
+    fn multiple_tasks_concurrent() {
+        let mut mgr = BackgroundTaskManager::new();
+        for name in &["build", "test", "lint"] {
+            let task = BackgroundTask {
+                label: name.to_string(),
+                tool_name: "shell".into(),
+                arguments: String::new(),
+                status: BackgroundTaskStatus::Running,
+                output_chunks: vec![],
+                result: None,
+                success: None,
+                started_at: Instant::now(),
+                finished_at: None,
+                abort_tx: None,
+                acknowledged: false,
+            };
+            mgr.insert(task).unwrap();
+        }
+        assert_eq!(mgr.active_count(), 3);
+
+        // Complete two
+        mgr.complete("build", "ok".into(), true);
+        mgr.complete("lint", "warnings".into(), false);
+        assert_eq!(mgr.active_count(), 1);
+
+        // Drain order is FIFO by completion
+        let completed = mgr.drain_completed();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].label, "build");
+        assert_eq!(completed[1].label, "lint");
+        assert!(!completed[1].success);
+
+        // Summary shows remaining running task
+        let summary = mgr.running_summary();
+        assert!(summary.contains("test"));
+        assert!(!summary.contains("build"));
+    }
+
+    #[test]
+    fn clear_all_cancels_and_removes_everything() {
+        let mut mgr = BackgroundTaskManager::new();
+        let (tx, mut rx) = oneshot::channel();
+        let task = BackgroundTask {
+            label: "cancelme".into(),
+            tool_name: "shell".into(),
+            arguments: String::new(),
+            status: BackgroundTaskStatus::Running,
+            output_chunks: vec![],
+            result: None,
+            success: None,
+            started_at: Instant::now(),
+            finished_at: None,
+            abort_tx: Some(tx),
+            acknowledged: false,
+        };
+        mgr.insert(task).unwrap();
+        mgr.clear_all();
+        assert_eq!(mgr.active_count(), 0);
+        assert!(mgr.drain_completed().is_empty());
+        // The abort signal was sent
+        assert!(rx.try_recv().is_ok());
+    }
 }
