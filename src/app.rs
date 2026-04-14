@@ -445,6 +445,7 @@ impl App {
                     }
                 }
                 self.memory_session_id = None;
+                self.bg_tasks.clear_all();
                 self.messages.clear();
                 self.conversation.retain(|m| m.role == "system");
                 self.messages
