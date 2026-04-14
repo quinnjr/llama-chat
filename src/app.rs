@@ -776,7 +776,7 @@ impl App {
     }
 
     #[cfg(not(tarpaulin_include))]
-    fn start_streaming(&mut self) {
+    pub(crate) fn start_streaming(&mut self) {
         self.waiting_for_response = true;
         self.streaming_token_count = 0;
         let mut tool_defs = self.tool_registry.definitions();
