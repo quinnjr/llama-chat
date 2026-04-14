@@ -1,3 +1,4 @@
+pub mod background;
 pub mod filesystem;
 pub mod permissions;
 pub mod shell;
