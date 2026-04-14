@@ -1,4 +1,5 @@
 pub mod background;
+pub mod background_subagent;
 pub mod filesystem;
 pub mod permissions;
 pub mod shell;
