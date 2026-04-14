@@ -49,4 +49,14 @@ pub enum AppEvent {
     MemoryExtractionDone {
         session_id: i64,
     },
+    BackgroundTaskDone {
+        label: String,
+        result: String,
+        success: bool,
+    },
+    BackgroundTaskOutput {
+        label: String,
+        chunk: String,
+    },
+    BackgroundTaskPoll,
 }

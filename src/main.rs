@@ -331,6 +331,11 @@ async fn main() -> Result<()> {
                 AppEvent::MemoryExtractionDone { session_id: _ } => {
                     app.memory_session_id = None;
                 }
+                AppEvent::BackgroundTaskDone { .. }
+                | AppEvent::BackgroundTaskOutput { .. }
+                | AppEvent::BackgroundTaskPoll => {
+                    // Wired up in Task 6 (main loop event handling)
+                }
             }
         }
 
