@@ -1563,6 +1563,49 @@ impl App {
                     }
                 }
             }
+            name if name.starts_with("mcp_") => {
+                if let Some((server_name, real_tool_name)) = self.mcp_tool_map.get(name) {
+                    if let Some(server) = self.mcp_servers.get(server_name) {
+                        let server = Arc::clone(server);
+                        let real_name = real_tool_name.clone();
+                        let args: serde_json::Value =
+                            serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
+                        tokio::spawn(async move {
+                            let result = tokio::select! {
+                                res = async {
+                                    let mut srv = server.lock().await;
+                                    srv.call_tool(&real_name, args).await
+                                } => {
+                                    match res {
+                                        Ok(output) => (output, true),
+                                        Err(e) => (e.to_string(), false),
+                                    }
+                                }
+                                _ = abort_rx => {
+                                    ("(cancelled)".to_string(), false)
+                                }
+                            };
+                            let _ = tx.send(AppEvent::BackgroundTaskDone {
+                                label,
+                                result: result.0,
+                                success: result.1,
+                            });
+                        });
+                    } else {
+                        let _ = tx.send(AppEvent::BackgroundTaskDone {
+                            label,
+                            result: format!("MCP server not found for tool: {}", name),
+                            success: false,
+                        });
+                    }
+                } else {
+                    let _ = tx.send(AppEvent::BackgroundTaskDone {
+                        label,
+                        result: format!("Unknown MCP tool: {}", name),
+                        success: false,
+                    });
+                }
+            }
             // Non-streaming tools (file ops, etc.)
             _ => {
                 let tool_name_clone = tool_name.clone();
