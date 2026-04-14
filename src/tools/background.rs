@@ -2,7 +2,156 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::Deserialize;
 use tokio::sync::oneshot;
+
+use crate::tools::Tool;
+
+const BLOCKED_BG_TOOLS: &[&str] = &["bg_run", "bg_status", "bg_cancel"];
+
+// ---------------------------------------------------------------------------
+// BgRunTool
+// ---------------------------------------------------------------------------
+
+pub struct BgRunTool;
+
+#[derive(Debug, Deserialize)]
+pub struct BgRunArgs {
+    pub label: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+}
+
+impl BgRunTool {
+    pub fn parse_args(arguments: &str) -> std::result::Result<BgRunArgs, String> {
+        let args: BgRunArgs =
+            serde_json::from_str(arguments).map_err(|e| format!("Invalid JSON: {e}"))?;
+        if BLOCKED_BG_TOOLS.contains(&args.tool.as_str()) {
+            return Err(format!(
+                "Cannot run '{}' in the background — background tools cannot be nested",
+                args.tool
+            ));
+        }
+        Ok(args)
+    }
+}
+
+#[async_trait]
+impl Tool for BgRunTool {
+    fn name(&self) -> &str {
+        "bg_run"
+    }
+
+    fn description(&self) -> &str {
+        "Run a tool in the background. Returns immediately, allowing other work \
+         to continue. Use bg_status to check progress and bg_cancel to abort."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "A unique label to identify this background task"
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "The name of the tool to run in the background"
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "The arguments to pass to the tool, exactly as if calling it directly"
+                }
+            },
+            "required": ["label", "tool", "arguments"]
+        })
+    }
+
+    async fn execute(&self, _arguments: &str) -> Result<String> {
+        Ok("bg_run execution is handled by the app".into())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BgStatusTool
+// ---------------------------------------------------------------------------
+
+pub struct BgStatusTool;
+
+#[derive(Deserialize)]
+pub struct BgStatusArgs {
+    pub label: Option<String>,
+}
+
+#[async_trait]
+impl Tool for BgStatusTool {
+    fn name(&self) -> &str {
+        "bg_status"
+    }
+
+    fn description(&self) -> &str {
+        "Check the status of background tasks. Provide a label to see detailed \
+         status and partial output for one task, or omit to see a summary of all tasks."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "The label of the task to check. Omit to list all tasks."
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, _arguments: &str) -> Result<String> {
+        Ok("bg_status execution is handled by the app".into())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BgCancelTool
+// ---------------------------------------------------------------------------
+
+pub struct BgCancelTool;
+
+#[derive(Deserialize)]
+pub struct BgCancelArgs {
+    pub label: String,
+}
+
+#[async_trait]
+impl Tool for BgCancelTool {
+    fn name(&self) -> &str {
+        "bg_cancel"
+    }
+
+    fn description(&self) -> &str {
+        "Cancel a running background task by its label."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "The label of the task to cancel"
+                }
+            },
+            "required": ["label"]
+        })
+    }
+
+    async fn execute(&self, _arguments: &str) -> Result<String> {
+        Ok("bg_cancel execution is handled by the app".into())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackgroundTaskStatus {
@@ -414,5 +563,80 @@ mod tests {
         let result = mgr.insert(make_task("build"));
         assert!(result.is_ok());
         assert_eq!(mgr.active_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool struct tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bg_run_tool_metadata() {
+        let tool = BgRunTool;
+        assert_eq!(tool.name(), "bg_run");
+        assert!(!tool.description().is_empty());
+        let schema = tool.parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["label"].is_object());
+        assert!(schema["properties"]["tool"].is_object());
+        assert!(schema["properties"]["arguments"].is_object());
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("label")));
+        assert!(required.contains(&serde_json::json!("tool")));
+        assert!(required.contains(&serde_json::json!("arguments")));
+    }
+
+    #[test]
+    fn bg_status_tool_metadata() {
+        let tool = BgStatusTool;
+        assert_eq!(tool.name(), "bg_status");
+        let schema = tool.parameters_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["label"].is_object());
+        // label is optional — not in required
+        assert!(
+            schema.get("required").is_none()
+                || schema["required"]
+                    .as_array()
+                    .map_or(true, |a| a.is_empty())
+        );
+    }
+
+    #[test]
+    fn bg_cancel_tool_metadata() {
+        let tool = BgCancelTool;
+        assert_eq!(tool.name(), "bg_cancel");
+        let schema = tool.parameters_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("label")));
+    }
+
+    #[test]
+    fn bg_run_parse_args_valid() {
+        let args = BgRunTool::parse_args(
+            r#"{"label":"build","tool":"shell","arguments":{"command":"cargo build"}}"#,
+        )
+        .unwrap();
+        assert_eq!(args.label, "build");
+        assert_eq!(args.tool, "shell");
+    }
+
+    #[test]
+    fn bg_run_parse_args_rejects_recursive() {
+        let result =
+            BgRunTool::parse_args(r#"{"label":"x","tool":"bg_run","arguments":{}}"#);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Cannot run"));
+    }
+
+    #[test]
+    fn bg_run_parse_args_rejects_bg_status() {
+        let result =
+            BgRunTool::parse_args(r#"{"label":"x","tool":"bg_status","arguments":{}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bg_run_parse_args_invalid_json() {
+        assert!(BgRunTool::parse_args("not json").is_err());
     }
 }
