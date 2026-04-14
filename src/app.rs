@@ -15,6 +15,9 @@ use crate::mcp::McpServer;
 use crate::skills::{self, Skill};
 use crate::tools::filesystem::{EditFileTool, ListFilesTool, ReadFileTool, WriteFileTool};
 use crate::tools::permissions::PermissionManager;
+use crate::tools::background::{
+    BackgroundTaskManager, BgCancelTool, BgRunTool, BgStatusTool,
+};
 use crate::tools::shell::{self, ShellTool};
 use crate::tools::{Tool, ToolRegistry};
 
@@ -59,6 +62,7 @@ pub struct App {
     pub subagents_pending: usize,
     pub consecutive_errors: u32,
     pub subagent_call_id: Option<String>,
+    pub bg_tasks: BackgroundTaskManager,
     #[allow(dead_code)]
     project_dir: PathBuf,
     pub memory: Option<Arc<crate::memory::MemoryService>>,
@@ -128,6 +132,9 @@ impl App {
         tool_registry.register(Box::new(WriteFileTool));
         tool_registry.register(Box::new(EditFileTool));
         tool_registry.register(Box::new(ListFilesTool));
+        tool_registry.register(Box::new(BgRunTool));
+        tool_registry.register(Box::new(BgStatusTool));
+        tool_registry.register(Box::new(BgCancelTool));
         let tool_count = tool_registry.tool_count() + 4; // +3 todo + 1 subagent
 
         let permissions = PermissionManager::load(&project_dir);
@@ -258,6 +265,7 @@ impl App {
             streaming_token_count: 0,
             consecutive_errors: 0,
             subagent_call_id: None,
+            bg_tasks: BackgroundTaskManager::new(),
             project_dir,
             memory,
             memory_session_id: None,
