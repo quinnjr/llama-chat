@@ -1064,6 +1064,121 @@ impl App {
                 });
                 return;
             }
+            "bg_status" => {
+                let args: crate::tools::background::BgStatusArgs =
+                    serde_json::from_str(&arguments).unwrap_or(
+                        crate::tools::background::BgStatusArgs { label: None }
+                    );
+                let result = if let Some(label) = args.label {
+                    match self.bg_tasks.status_one(&label) {
+                        Ok(status) => status,
+                        Err(e) => e,
+                    }
+                } else {
+                    let summary = self.bg_tasks.summary();
+                    if summary.is_empty() {
+                        "No background tasks.".into()
+                    } else {
+                        format!("Background tasks:\n{summary}")
+                    }
+                };
+                self.bg_tasks.clear_acknowledged();
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success: true,
+                });
+                return;
+            }
+            "bg_cancel" => {
+                let (result, success) = match serde_json::from_str::<crate::tools::background::BgCancelArgs>(&arguments) {
+                    Ok(args) => match self.bg_tasks.cancel(&args.label) {
+                        Ok(()) => (format!("Task '{}' cancelled.", args.label), true),
+                        Err(e) => (e, false),
+                    },
+                    Err(e) => (format!("Invalid bg_cancel arguments: {e}"), false),
+                };
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result,
+                    success,
+                });
+                return;
+            }
+            "bg_run" => {
+                let args = match crate::tools::background::BgRunTool::parse_args(&arguments) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::ToolResult {
+                            tool_call_id: call_id,
+                            result: e,
+                            success: false,
+                        });
+                        return;
+                    }
+                };
+
+                let inner_tool = args.tool.clone();
+                let inner_args_str = args.arguments.to_string();
+                let label = args.label.clone();
+
+                // Permission check for the inner tool
+                let inner_permission_key = if inner_tool == "shell" {
+                    crate::tools::shell::extract_command(&inner_args_str)
+                        .unwrap_or_else(|| inner_args_str.clone())
+                } else {
+                    format!("{} {}", inner_tool, inner_args_str)
+                };
+
+                if !self.yolo
+                    && !self.session_allow.contains(inner_tool.as_str())
+                    && !self.permissions.is_allowed(&inner_permission_key)
+                {
+                    let _ = tx.send(AppEvent::ToolResult {
+                        tool_call_id: call_id,
+                        result: format!("Permission denied for {}: {}", inner_tool, inner_permission_key),
+                        success: false,
+                    });
+                    return;
+                }
+
+                let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
+
+                let task = crate::tools::background::BackgroundTask {
+                    label: label.clone(),
+                    tool_name: inner_tool.clone(),
+                    arguments: inner_args_str.clone(),
+                    status: crate::tools::background::BackgroundTaskStatus::Running,
+                    output_chunks: vec![],
+                    result: None,
+                    success: None,
+                    started_at: std::time::Instant::now(),
+                    finished_at: None,
+                    abort_tx: Some(abort_tx),
+                    acknowledged: false,
+                };
+
+                if let Err(e) = self.bg_tasks.insert(task) {
+                    let _ = tx.send(AppEvent::ToolResult {
+                        tool_call_id: call_id,
+                        result: e,
+                        success: false,
+                    });
+                    return;
+                }
+
+                // Spawn background execution
+                self.spawn_background_tool(label.clone(), inner_tool.clone(), inner_args_str.clone(), tx.clone(), abort_rx);
+
+                let display = crate::tools::shell::extract_command(&inner_args_str)
+                    .unwrap_or_else(|| inner_args_str.clone());
+                let _ = tx.send(AppEvent::ToolResult {
+                    tool_call_id: call_id,
+                    result: format!("Background task '{}' started ({}: {})", label, inner_tool, display),
+                    success: true,
+                });
+                return;
+            }
             "subagent" => {
                 match crate::subagent::parse_args(&arguments) {
                     Ok(args) => {
@@ -1319,6 +1434,163 @@ impl App {
         });
     }
 
+    #[cfg(not(tarpaulin_include))]
+    fn spawn_background_tool(
+        &self,
+        label: String,
+        tool_name: String,
+        arguments: String,
+        tx: mpsc::UnboundedSender<AppEvent>,
+        abort_rx: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        match tool_name.as_str() {
+            "shell" => {
+                let args: Result<serde_json::Value, _> = serde_json::from_str(&arguments);
+                let command = args
+                    .ok()
+                    .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                    .unwrap_or(arguments.clone());
+
+                let child = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .env("CI", "true")
+                    .env("DEBIAN_FRONTEND", "noninteractive")
+                    .env("npm_config_yes", "true")
+                    .spawn();
+
+                match child {
+                    Ok(mut child) => {
+                        let stdout = child.stdout.take();
+                        let stderr = child.stderr.take();
+                        let tx_out = tx.clone();
+                        let tx_err = tx.clone();
+                        let label_out = label.clone();
+                        let label_err = label.clone();
+
+                        let stdout_handle = stdout.map(|stdout| {
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncBufReadExt;
+                                let mut reader = tokio::io::BufReader::new(stdout);
+                                let mut line = String::new();
+                                while let Ok(n) = reader.read_line(&mut line).await {
+                                    if n == 0 { break; }
+                                    let _ = tx_out.send(AppEvent::BackgroundTaskOutput {
+                                        label: label_out.clone(),
+                                        chunk: line.clone(),
+                                    });
+                                    line.clear();
+                                }
+                            })
+                        });
+
+                        let stderr_handle = stderr.map(|stderr| {
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncBufReadExt;
+                                let mut reader = tokio::io::BufReader::new(stderr);
+                                let mut line = String::new();
+                                while let Ok(n) = reader.read_line(&mut line).await {
+                                    if n == 0 { break; }
+                                    let _ = tx_err.send(AppEvent::BackgroundTaskOutput {
+                                        label: label_err.clone(),
+                                        chunk: format!("stderr: {}", line),
+                                    });
+                                    line.clear();
+                                }
+                            })
+                        });
+
+                        tokio::spawn(async move {
+                            tokio::select! {
+                                result = async {
+                                    let wait_result = tokio::time::timeout(
+                                        std::time::Duration::from_secs(120),
+                                        child.wait(),
+                                    ).await;
+                                    let (success, code, timed_out) = match wait_result {
+                                        Ok(Ok(s)) => (s.success(), s.code(), false),
+                                        Ok(Err(_)) => (false, None, false),
+                                        Err(_) => {
+                                            let _ = child.kill().await;
+                                            (false, None, true)
+                                        }
+                                    };
+                                    if let Some(h) = stdout_handle { let _ = h.await; }
+                                    if let Some(h) = stderr_handle { let _ = h.await; }
+                                    (success, code, timed_out)
+                                } => {
+                                    let (success, code, timed_out) = result;
+                                    let msg = if timed_out {
+                                        "(command timed out after 120s)".into()
+                                    } else if success {
+                                        "(command completed)".into()
+                                    } else {
+                                        format!("(command exited with {:?})", code)
+                                    };
+                                    let _ = tx.send(AppEvent::BackgroundTaskDone {
+                                        label,
+                                        result: msg,
+                                        success,
+                                    });
+                                }
+                                _ = abort_rx => {
+                                    let _ = child.start_kill();
+                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                    let _ = child.kill().await;
+                                    let _ = tx.send(AppEvent::BackgroundTaskDone {
+                                        label,
+                                        result: "(cancelled)".into(),
+                                        success: false,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::BackgroundTaskDone {
+                            label,
+                            result: e.to_string(),
+                            success: false,
+                        });
+                    }
+                }
+            }
+            // Non-streaming tools (file ops, etc.)
+            _ => {
+                let tool_name_clone = tool_name.clone();
+                tokio::spawn(async move {
+                    let result = tokio::select! {
+                        res = async {
+                            match tool_name_clone.as_str() {
+                                "read_file" => ReadFileTool.execute(&arguments).await,
+                                "write_file" => WriteFileTool.execute(&arguments).await,
+                                "edit_file" => EditFileTool.execute(&arguments).await,
+                                "list_files" => ListFilesTool.execute(&arguments).await,
+                                _ => Err(anyhow::anyhow!("Unknown tool '{}' for background execution", tool_name_clone)),
+                            }
+                        } => {
+                            match res {
+                                Ok(output) => (output, true),
+                                Err(e) => (e.to_string(), false),
+                            }
+                        }
+                        _ = abort_rx => {
+                            ("(cancelled)".to_string(), false)
+                        }
+                    };
+                    let _ = tx.send(AppEvent::BackgroundTaskDone {
+                        label,
+                        result: result.0,
+                        success: result.1,
+                    });
+                });
+            }
+        }
+    }
+
     pub fn handle_tool_result(&mut self, tool_call_id: String, result: String, success: bool) {
         // Flush any streaming output
         let mut full_output = std::mem::take(&mut self.tool_output_buffer);
@@ -1366,6 +1638,25 @@ impl App {
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
         });
+        // If no more pending foreground tools, drain completed background results
+        if self.pending_tool_calls.is_empty() {
+            let completed = self.bg_tasks.drain_completed();
+            for result in completed {
+                let status = if result.success { "completed" } else { "failed" };
+                let content = format!(
+                    "[Background task '{}' ({}) {} after {:.1}s]\n{}",
+                    result.label, result.tool_name, status,
+                    result.elapsed.as_secs_f64(), result.result
+                );
+                self.conversation.push(Message {
+                    role: "system".into(),
+                    content: Some(content.clone()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                self.messages.push(ChatEntry::System(content));
+            }
+        }
         self.process_next_tool_call();
     }
 
