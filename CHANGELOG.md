@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-14
+
+### Added
+
+#### Background Task Monitor
+- **`bg_run` tool** — run any tool (shell, file ops, MCP, subagents) in the background with a user-assigned label
+- **`bg_status` tool** — poll one task for detailed status and partial output, or get a summary of all tasks
+- **`bg_cancel` tool** — abort a running background task with graceful SIGTERM → SIGKILL shutdown
+- **Completion queuing** — background results are queued and injected as system messages when the LLM is idle
+- **Timer-based polling** — configurable interval (default 30s) nudges the LLM with status updates on running tasks
+- **Permission checking** — inner tool permissions are enforced at launch time
+- **Recursive backgrounding prevention** — bg_run/bg_status/bg_cancel cannot be backgrounded
+
+#### Background Subagent Runner
+- **Self-contained async runner** for executing subagents in the background
+- Full agent lifecycle (stream → tool calls → results → stream) runs inside the spawned task
+- Completely independent of the foreground subagent state machine
+- Tool calls auto-allowed (user approved at bg_run invocation)
+- Concurrent execution of multiple agents within a single background task
+
+#### Configuration
+- New `[background]` section in config.toml:
+  - `poll_interval` — seconds between automatic status nudges (default: 30)
+
+#### UI Enhancements
+- **Background task counter** in header: gear icon with active count (e.g., "⚙ 2 bg")
+- Background tasks cleared on `/clear` command
+
+### Dependencies Added
+- `libc` 0.2 for SIGTERM signal delivery during task cancellation
+
 ## [0.3.0] - 2026-04-13
 
 ### Added
