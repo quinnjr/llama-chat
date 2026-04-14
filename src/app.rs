@@ -1563,6 +1563,40 @@ impl App {
                     }
                 }
             }
+            "subagent" => {
+                match crate::subagent::parse_args(&arguments) {
+                    Ok(args) => {
+                        let mut all_tool_defs = self.tool_registry.definitions();
+                        all_tool_defs.extend(self.mcp_tool_defs.clone());
+
+                        let server = self.api_client.server().clone();
+                        let model = self.active_model.clone();
+                        let mcp_servers = self.mcp_servers.clone();
+                        let mcp_tool_map = self.mcp_tool_map.clone();
+
+                        tokio::spawn(
+                            crate::tools::background_subagent::run_background_subagents(
+                                args.agents,
+                                server,
+                                model,
+                                all_tool_defs,
+                                mcp_servers,
+                                mcp_tool_map,
+                                tx,
+                                label,
+                                abort_rx,
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::BackgroundTaskDone {
+                            label,
+                            result: e,
+                            success: false,
+                        });
+                    }
+                }
+            }
             name if name.starts_with("mcp_") => {
                 if let Some((server_name, real_tool_name)) = self.mcp_tool_map.get(name) {
                     if let Some(server) = self.mcp_servers.get(server_name) {
