@@ -1537,7 +1537,11 @@ impl App {
                                     });
                                 }
                                 _ = abort_rx => {
-                                    let _ = child.start_kill();
+                                    // Send SIGTERM for graceful shutdown
+                                    if let Some(pid) = child.id() {
+                                        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                                    }
+                                    // Grace period before force kill
                                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                     let _ = child.kill().await;
                                     let _ = tx.send(AppEvent::BackgroundTaskDone {
@@ -2319,7 +2323,7 @@ mod app_tests {
         let mut app = test_app();
         app.handle_slash_command("/tools");
         assert!(
-            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 5") && s.contains("Todo tools:"))
+            matches!(&app.messages[0], ChatEntry::System(s) if s.contains("Built-in tools: 8") && s.contains("Todo tools:"))
         );
     }
 
@@ -3009,7 +3013,7 @@ mod app_tests {
         assert!(app.streaming_buffer.is_empty());
         assert_eq!(app.active_model, "llama3:8b");
         assert_eq!(app.active_server_name, "Local Ollama");
-        assert_eq!(app.tool_count, 9); // 5 built-in + 3 todo + 1 subagent
+        assert_eq!(app.tool_count, 12); // 8 built-in + 3 todo + 1 subagent
         assert!(!app.should_quit);
         assert!(!app.yolo);
         assert!(app.pending_permission.is_none());
