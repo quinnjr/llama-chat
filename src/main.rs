@@ -148,6 +148,19 @@ async fn main() -> Result<()> {
         }
     });
 
+    let poll_tx = event_tx.clone();
+    let poll_interval = app.config.background.poll_interval;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(
+            std::time::Duration::from_secs(poll_interval),
+        );
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            let _ = poll_tx.send(AppEvent::BackgroundTaskPoll);
+        }
+    });
+
     loop {
         terminal.draw(|f| {
             ui::draw(f, &app, &app.theme.clone());
@@ -330,6 +343,57 @@ async fn main() -> Result<()> {
                 }
                 AppEvent::MemoryExtractionDone { session_id: _ } => {
                     app.memory_session_id = None;
+                }
+                AppEvent::BackgroundTaskDone {
+                    label,
+                    result,
+                    success,
+                } => {
+                    app.bg_tasks.complete(&label, result, success);
+                    // If idle, inject results and prompt the LLM
+                    if !app.waiting_for_response && app.pending_tool_calls.is_empty() {
+                        let completed = app.bg_tasks.drain_completed();
+                        for r in completed {
+                            let status = if r.success { "completed" } else { "failed" };
+                            let content = format!(
+                                "[Background task '{}' ({}) {} after {:.1}s]\n{}",
+                                r.label, r.tool_name, status,
+                                r.elapsed.as_secs_f64(), r.result
+                            );
+                            app.conversation.push(crate::api::types::Message {
+                                role: "system".into(),
+                                content: Some(content.clone()),
+                                tool_calls: None,
+                                tool_call_id: None,
+                            });
+                            app.messages.push(app::ChatEntry::System(content));
+                        }
+                        app.start_streaming();
+                    }
+                    // If busy, results stay in the queue for drain at end of tool chain
+                }
+                AppEvent::BackgroundTaskOutput { label, chunk } => {
+                    app.bg_tasks.append_output(&label, chunk);
+                }
+                AppEvent::BackgroundTaskPoll => {
+                    if app.bg_tasks.has_running_tasks()
+                        && !app.waiting_for_response
+                        && app.pending_tool_calls.is_empty()
+                    {
+                        let summary = app.bg_tasks.running_summary();
+                        let content = format!(
+                            "[Background tasks still running:]\n{}",
+                            summary
+                        );
+                        app.conversation.push(crate::api::types::Message {
+                            role: "system".into(),
+                            content: Some(content.clone()),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                        app.messages.push(app::ChatEntry::System(content));
+                        app.start_streaming();
+                    }
                 }
             }
         }

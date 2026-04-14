@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub background: BackgroundConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -105,6 +107,22 @@ impl Default for MemoryConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct BackgroundConfig {
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval: u64,
+}
+
+fn default_poll_interval() -> u64 { 30 }
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval: default_poll_interval(),
+        }
+    }
+}
+
 impl AppConfig {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         if path.exists() {
@@ -132,6 +150,7 @@ impl Default for AppConfig {
             defaults: DefaultsConfig::default(),
             theme: ThemeConfig::default(),
             memory: MemoryConfig::default(),
+            background: BackgroundConfig::default(),
         }
     }
 }
@@ -269,5 +288,21 @@ extraction_on_clear = false
         assert_eq!(config.memory.embedding_model, "nomic-embed-text");
         assert_eq!(config.memory.top_n, 5);
         assert!(!config.memory.extraction_on_clear);
+    }
+
+    #[test]
+    fn default_background_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.background.poll_interval, 30);
+    }
+
+    #[test]
+    fn parse_background_section() {
+        let toml_str = r#"
+[background]
+poll_interval = 60
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.background.poll_interval, 60);
     }
 }

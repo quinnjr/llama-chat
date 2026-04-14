@@ -27,6 +27,9 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         ""
     };
 
+    // Background tasks indicator
+    let bg_count = app.bg_tasks.active_count();
+
     // Line 1: model, server, health, memory
     let mut line1_spans = vec![
         Span::styled("Model: ", Style::default().fg(theme.muted)),
@@ -44,6 +47,13 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         line1_spans.push(Span::styled(
             mem_label,
             Style::default().fg(theme.tool_ok),
+        ));
+    }
+
+    if bg_count > 0 {
+        line1_spans.push(Span::styled(
+            format!("  \u{2699} {} bg", bg_count),
+            Style::default().fg(theme.accent),
         ));
     }
 
