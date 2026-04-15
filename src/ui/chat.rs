@@ -355,24 +355,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         }
     }
 
-    let content_width = area.width as usize;
     let visible_height = area.height.saturating_sub(2) as usize;
-    let total_visual_lines: usize = lines
-        .iter()
-        .map(|line| {
-            let w = line.width();
-            if w == 0 || content_width == 0 {
-                1
-            } else {
-                w.div_ceil(content_width)
-            }
-        })
-        .sum();
-    let scroll = if total_visual_lines > visible_height {
-        (total_visual_lines - visible_height) as u16
-    } else {
-        0
-    };
 
     let chat = Paragraph::new(lines)
         .block(
@@ -380,8 +363,14 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 .borders(Borders::TOP | Borders::BOTTOM)
                 .border_style(Style::default().fg(theme.border)),
         )
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
+        .wrap(Wrap { trim: false });
 
-    f.render_widget(chat, area);
+    let total_visual_lines = chat.line_count(area.width) as usize;
+    let scroll = if total_visual_lines > visible_height {
+        (total_visual_lines - visible_height) as u16
+    } else {
+        0
+    };
+
+    f.render_widget(chat.scroll((scroll, 0)), area);
 }
