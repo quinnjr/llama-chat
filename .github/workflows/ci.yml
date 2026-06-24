@@ -38,6 +38,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # sqlite-vector-rs loads its extension at runtime from the path in
+      # .cargo/config.toml (SQLITE_VECTOR_RS_LIB=target/debug/libsqlite_vector_rs.so).
+      # cargo only emits the dependency's cdylib into target/debug/deps/ with a
+      # hash, so build first and copy it to the expected unhashed path. The
+      # unhashed file name is required: SQLite derives the extension entry-point
+      # symbol from it (sqlite3_sqlitevectorrs_init).
+      - name: Build sqlite-vector-rs extension
+        run: |
+          cargo build
+          cp "$(find target/debug/deps -maxdepth 1 -name 'libsqlite_vector_rs-*.so' -type f | head -1)" \
+            target/debug/libsqlite_vector_rs.so
       - run: cargo test
 
   fmt:
