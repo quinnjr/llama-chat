@@ -18,11 +18,17 @@ pub struct EmbeddingClient {
 
 impl EmbeddingClient {
     pub fn new(server: ServerConfig, model: String) -> Self {
-        Self { http: Client::new(), server, model }
+        Self {
+            http: Client::new(),
+            server,
+            model,
+        }
     }
 
     #[cfg(test)]
-    pub fn model(&self) -> &str { &self.model }
+    pub fn model(&self) -> &str {
+        &self.model
+    }
 
     /// Embed one or more inputs. Returns `None` on any non-fatal failure
     /// (network, HTTP error, malformed JSON) so callers can gracefully
@@ -32,7 +38,10 @@ impl EmbeddingClient {
             return Ok(Some(vec![]));
         }
         let url = format!("{}/embeddings", self.server.url);
-        let body = EmbedRequest { model: &self.model, input: &inputs };
+        let body = EmbedRequest {
+            model: &self.model,
+            input: &inputs,
+        };
         let mut req = self.http.post(&url).json(&body);
         if let Some(ref key) = self.server.api_key {
             req = req.bearer_auth(key);
@@ -97,7 +106,9 @@ mod tests {
     fn empty_input_returns_empty_ok() {
         // Smoke test of the short-circuit branch; no network.
         let server = ServerConfig {
-            name: "t".into(), url: "http://127.0.0.1:0".into(), api_key: None,
+            name: "t".into(),
+            url: "http://127.0.0.1:0".into(),
+            api_key: None,
         };
         let client = EmbeddingClient::new(server, "m".into());
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -107,7 +118,11 @@ mod tests {
 
     #[test]
     fn model_accessor_returns_model() {
-        let server = ServerConfig { name: "t".into(), url: "u".into(), api_key: None };
+        let server = ServerConfig {
+            name: "t".into(),
+            url: "u".into(),
+            api_key: None,
+        };
         let client = EmbeddingClient::new(server, "nomic-embed-text".into());
         assert_eq!(client.model(), "nomic-embed-text");
     }

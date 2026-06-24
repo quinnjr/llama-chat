@@ -14,17 +14,21 @@ pub const CURRENT_VERSION: i64 = 1;
 /// Returns the final schema version. Errors if the DB was written by
 /// a newer llama-chat build than this one — refusing to run is safer
 /// than silently corrupting the user's data.
-pub fn init(conn: &mut Connection, embedding_model: &str, embedding_dim: i64)
-    -> Result<i64, MemoryError>
-{
-    conn.execute_batch("
+pub fn init(
+    conn: &mut Connection,
+    embedding_model: &str,
+    embedding_dim: i64,
+) -> Result<i64, MemoryError> {
+    conn.execute_batch(
+        "
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS meta (
             k TEXT PRIMARY KEY,
             v TEXT NOT NULL
         );
-    ")?;
+    ",
+    )?;
 
     let found = read_version(conn)?;
 
@@ -44,7 +48,10 @@ pub fn init(conn: &mut Connection, embedding_model: &str, embedding_dim: i64)
     } else if found == CURRENT_VERSION {
         Ok(found)
     } else if found > CURRENT_VERSION {
-        Err(MemoryError::SchemaTooNew { found, supported: CURRENT_VERSION })
+        Err(MemoryError::SchemaTooNew {
+            found,
+            supported: CURRENT_VERSION,
+        })
     } else {
         // Future migrations would run here, in order.
         // For v1 only, this branch is unreachable.
@@ -54,18 +61,18 @@ pub fn init(conn: &mut Connection, embedding_model: &str, embedding_dim: i64)
 
 fn read_version(conn: &Connection) -> Result<i64, MemoryError> {
     let v: Option<String> = conn
-        .query_row(
-            "SELECT v FROM meta WHERE k = 'schema_version'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT v FROM meta WHERE k = 'schema_version'", [], |r| {
+            r.get(0)
+        })
         .ok();
     Ok(v.and_then(|s| s.parse().ok()).unwrap_or(0))
 }
 
-fn apply_v1(tx: &rusqlite::Transaction, embedding_model: &str, embedding_dim: i64)
-    -> Result<(), MemoryError>
-{
+fn apply_v1(
+    tx: &rusqlite::Transaction,
+    embedding_model: &str,
+    embedding_dim: i64,
+) -> Result<(), MemoryError> {
     // Record the embedding model & dim so mismatches on later startups are detected.
     tx.execute(
         "INSERT OR REPLACE INTO meta(k, v) VALUES('embedding_model', ?)",
@@ -77,7 +84,8 @@ fn apply_v1(tx: &rusqlite::Transaction, embedding_model: &str, embedding_dim: i6
     )?;
 
     // Curated memories
-    tx.execute_batch("
+    tx.execute_batch(
+        "
         CREATE TABLE memories (
             id            INTEGER PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN ('user','feedback','project','reference')),
@@ -150,7 +158,8 @@ fn apply_v1(tx: &rusqlite::Transaction, embedding_model: &str, embedding_dim: i6
                 VALUES ('delete', old.id, old.content);
             INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
         END;
-    ")?;
+    ",
+    )?;
 
     // Virtual vector tables. Must register sqlite-vector-rs on the connection
     // before calling this function — the caller in store.rs does so.
@@ -183,8 +192,10 @@ mod tests {
         conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0))
             .unwrap();
         // vector table exists
-        conn.query_row("SELECT COUNT(*) FROM memories_vec", [], |r| r.get::<_, i64>(0))
-            .unwrap();
+        conn.query_row("SELECT COUNT(*) FROM memories_vec", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
     }
 
     #[test]
@@ -199,10 +210,8 @@ mod tests {
     fn refuses_newer_schema() {
         let mut conn = open_with_extension();
         init(&mut conn, "test-model", 4).unwrap();
-        conn.execute(
-            "UPDATE meta SET v = '99' WHERE k = 'schema_version'",
-            [],
-        ).unwrap();
+        conn.execute("UPDATE meta SET v = '99' WHERE k = 'schema_version'", [])
+            .unwrap();
         let err = init(&mut conn, "test-model", 4).unwrap_err();
         match err {
             MemoryError::SchemaTooNew { found, supported } => {

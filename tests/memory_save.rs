@@ -21,11 +21,14 @@ async fn save_and_read_back() {
     let tmp = tempdir().unwrap();
 
     let mut cfg = AppConfig::default();
-    cfg.servers.insert("local".into(), ServerConfig {
-        name: "local".into(),
-        url: url.to_string_lossy().into_owned(),
-        api_key: None,
-    });
+    cfg.servers.insert(
+        "local".into(),
+        ServerConfig {
+            name: "local".into(),
+            url: url.to_string_lossy().into_owned(),
+            api_key: None,
+        },
+    );
     cfg.memory = MemoryConfig {
         enabled: true,
         embedding_model: std::env::var("LLAMA_CHAT_EMBED_MODEL")
@@ -39,9 +42,18 @@ async fn save_and_read_back() {
     let svc = tokio::time::timeout(
         Duration::from_secs(10),
         MemoryService::open(&cfg, tmp.path()),
-    ).await.expect("timeout").expect("open");
+    )
+    .await
+    .expect("timeout")
+    .expect("open");
 
-    let id = svc.save("I prefer terse responses".into(), Kind::Feedback, Scope::Global)
-        .await.unwrap();
+    let id = svc
+        .save(
+            "I prefer terse responses".into(),
+            Kind::Feedback,
+            Scope::Global,
+        )
+        .await
+        .unwrap();
     assert!(id > 0);
 }

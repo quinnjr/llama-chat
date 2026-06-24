@@ -271,7 +271,8 @@ mod tests {
 
     #[test]
     fn chat_response_without_usage() {
-        let json = r#"{"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}"#;
+        let json =
+            r#"{"id":"1","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert!(resp.usage.is_none());
     }

@@ -175,6 +175,9 @@ impl std::fmt::Display for BackgroundTaskStatus {
 pub struct BackgroundTask {
     pub label: String,
     pub tool_name: String,
+    /// Raw arguments the task was launched with. Retained as metadata for the
+    /// task record; not currently read back during execution.
+    #[allow(dead_code)]
     pub arguments: String,
     pub status: BackgroundTaskStatus,
     pub output_chunks: Vec<String>,
@@ -236,18 +239,19 @@ impl BackgroundTaskManager {
     /// Running. Completed/failed/cancelled tasks with the same label get
     /// overwritten.
     pub fn insert(&mut self, task: BackgroundTask) -> Result<(), String> {
-        if let Some(existing) = self.tasks.get(&task.label) {
-            if existing.status == BackgroundTaskStatus::Running {
-                return Err(format!(
-                    "task with label '{}' is already running",
-                    task.label
-                ));
-            }
+        if let Some(existing) = self.tasks.get(&task.label)
+            && existing.status == BackgroundTaskStatus::Running
+        {
+            return Err(format!(
+                "task with label '{}' is already running",
+                task.label
+            ));
         }
         self.tasks.insert(task.label.clone(), task);
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn get_mut(&mut self, label: &str) -> Option<&mut BackgroundTask> {
         self.tasks.get_mut(label)
     }
@@ -272,10 +276,7 @@ impl BackgroundTaskManager {
             task.finished_at = Some(Instant::now());
             task.abort_tx = None;
 
-            let elapsed = task
-                .finished_at
-                .unwrap()
-                .duration_since(task.started_at);
+            let elapsed = task.finished_at.unwrap().duration_since(task.started_at);
 
             self.completed_queue.push_back(CompletedTaskResult {
                 label: task.label.clone(),
@@ -393,9 +394,8 @@ impl BackgroundTaskManager {
 
     /// Remove tasks that are not running AND have been acknowledged.
     pub fn clear_acknowledged(&mut self) {
-        self.tasks.retain(|_, t| {
-            t.status == BackgroundTaskStatus::Running || !t.acknowledged
-        });
+        self.tasks
+            .retain(|_, t| t.status == BackgroundTaskStatus::Running || !t.acknowledged);
     }
 
     /// Abort all running tasks and clear everything.
@@ -595,9 +595,7 @@ mod tests {
         // label is optional — not in required
         assert!(
             schema.get("required").is_none()
-                || schema["required"]
-                    .as_array()
-                    .map_or(true, |a| a.is_empty())
+                || schema["required"].as_array().is_none_or(|a| a.is_empty())
         );
     }
 
@@ -622,16 +620,14 @@ mod tests {
 
     #[test]
     fn bg_run_parse_args_rejects_recursive() {
-        let result =
-            BgRunTool::parse_args(r#"{"label":"x","tool":"bg_run","arguments":{}}"#);
+        let result = BgRunTool::parse_args(r#"{"label":"x","tool":"bg_run","arguments":{}}"#);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Cannot run"));
     }
 
     #[test]
     fn bg_run_parse_args_rejects_bg_status() {
-        let result =
-            BgRunTool::parse_args(r#"{"label":"x","tool":"bg_status","arguments":{}}"#);
+        let result = BgRunTool::parse_args(r#"{"label":"x","tool":"bg_status","arguments":{}}"#);
         assert!(result.is_err());
     }
 

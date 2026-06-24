@@ -55,7 +55,10 @@ pub fn default_paths(project_dir: &Path) -> crate::memory::types::Paths {
         .join("llama-chat")
         .join("memory.db");
     let project = project_dir.join(".llama-chat").join("memory.db");
-    crate::memory::types::Paths { global_db: global, project_db: project }
+    crate::memory::types::Paths {
+        global_db: global,
+        project_db: project,
+    }
 }
 
 #[cfg(test)]

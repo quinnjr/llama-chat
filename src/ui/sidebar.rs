@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::App;
@@ -47,9 +47,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border));
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }

@@ -13,11 +13,9 @@ use crate::config::theme::Theme;
 use crate::event::AppEvent;
 use crate::mcp::McpServer;
 use crate::skills::{self, Skill};
+use crate::tools::background::{BackgroundTaskManager, BgCancelTool, BgRunTool, BgStatusTool};
 use crate::tools::filesystem::{EditFileTool, ListFilesTool, ReadFileTool, WriteFileTool};
 use crate::tools::permissions::PermissionManager;
-use crate::tools::background::{
-    BackgroundTaskManager, BgCancelTool, BgRunTool, BgStatusTool,
-};
 use crate::tools::shell::{self, ShellTool};
 use crate::tools::{Tool, ToolRegistry};
 
@@ -244,10 +242,19 @@ impl App {
             mcp_servers: HashMap::new(),
             mcp_tool_defs: Vec::new(),
             mcp_tool_map: HashMap::new(),
-            session_allow: ["read_file", "write_file", "edit_file", "list_files", "todo", "todo_complete", "wipe_todo", "subagent"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            session_allow: [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "todo",
+                "todo_complete",
+                "wipe_todo",
+                "subagent",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             event_tx,
             pending_tool_calls: Vec::new(),
             assembling_tool_calls: HashMap::new(),
@@ -406,7 +413,8 @@ impl App {
                         let _ = tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             svc.extract_session(&api, sid, model),
-                        ).await;
+                        )
+                        .await;
                     });
                 }
                 self.should_quit = true;
@@ -420,27 +428,29 @@ impl App {
                     let model = self.active_model.clone();
                     // Block (with a visible "extracting..." placeholder) up to 30s.
                     self.messages.push(crate::app::ChatEntry::System(
-                        "[extracting memories…]".into()));
+                        "[extracting memories…]".into(),
+                    ));
                     let result = tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async move {
                             tokio::time::timeout(
                                 std::time::Duration::from_secs(30),
                                 svc.extract_session(&api, sid, model),
-                            ).await
+                            )
+                            .await
                         })
                     });
                     match result {
                         Ok(Ok(())) => {
-                            self.messages.push(crate::app::ChatEntry::System(
-                                "memories saved".into()));
+                            self.messages
+                                .push(crate::app::ChatEntry::System("memories saved".into()));
                         }
                         Ok(Err(e)) => {
-                            self.messages.push(crate::app::ChatEntry::System(
-                                format!("extract error: {e}")));
+                            self.messages
+                                .push(crate::app::ChatEntry::System(format!("extract error: {e}")));
                         }
                         Err(_) => {
-                            self.messages.push(crate::app::ChatEntry::System(
-                                "extraction timed out".into()));
+                            self.messages
+                                .push(crate::app::ChatEntry::System("extraction timed out".into()));
                         }
                     }
                 }
@@ -553,10 +563,13 @@ impl App {
             }
             "/thinking" => {
                 self.show_thinking = !self.show_thinking;
-                let status = if self.show_thinking { "visible" } else { "hidden" };
-                self.messages.push(ChatEntry::System(format!(
-                    "Thinking display: {status}"
-                )));
+                let status = if self.show_thinking {
+                    "visible"
+                } else {
+                    "hidden"
+                };
+                self.messages
+                    .push(ChatEntry::System(format!("Thinking display: {status}")));
             }
             "/help" => {
                 self.messages.push(ChatEntry::System(
@@ -587,48 +600,73 @@ impl App {
     fn dispatch_memory_command(&mut self, cmd: crate::memory::Command) {
         use crate::memory::{Command, Scope, save_ack};
         let Some(ref svc) = self.memory else {
-            self.messages.push(crate::app::ChatEntry::System(
-                format!("memory disabled: {}",
-                        self.memory_disabled_reason.as_deref().unwrap_or("not enabled"))
-            ));
+            self.messages.push(crate::app::ChatEntry::System(format!(
+                "memory disabled: {}",
+                self.memory_disabled_reason
+                    .as_deref()
+                    .unwrap_or("not enabled")
+            )));
             return;
         };
         let svc = svc.clone();
         let tx = self.event_tx.clone();
         match cmd {
-            Command::Remember { content, scope, kind } => {
+            Command::Remember {
+                content,
+                scope,
+                kind,
+            } => {
                 tokio::spawn(async move {
                     match svc.save(content, kind, scope).await {
                         Ok(id) => {
-                            let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind)));
+                            let _ =
+                                tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind)));
                         }
-                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                        Err(e) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}")));
+                        }
                     }
                 });
             }
             Command::RememberThis { scope, kind } => {
                 // Find the last assistant turn from current conversation.
-                let last_asst = self.conversation.iter().rev()
+                let last_asst = self
+                    .conversation
+                    .iter()
+                    .rev()
                     .find(|m| m.role == "assistant")
                     .and_then(|m| m.content.clone());
                 let Some(content) = last_asst else {
                     self.messages.push(crate::app::ChatEntry::System(
-                        "no assistant turn to remember".into()));
+                        "no assistant turn to remember".into(),
+                    ));
                     return;
                 };
                 tokio::spawn(async move {
                     match svc.save(content, kind, scope).await {
-                        Ok(id) => { let _ = tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind))); }
-                        Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}"))); }
+                        Ok(id) => {
+                            let _ =
+                                tx.send(crate::event::AppEvent::Error(save_ack(id, scope, kind)));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(format!("save: {e}")));
+                        }
                     }
                 });
             }
             Command::Forget { id, scope } => {
                 tokio::spawn(async move {
                     match svc.forget(id, scope).await {
-                        Ok(true)  => { let _ = tx.send(crate::event::AppEvent::Error(format!("forgot #{id}"))); }
-                        Ok(false) => { let _ = tx.send(crate::event::AppEvent::Error(format!("no memory #{id}"))); }
-                        Err(e)    => { let _ = tx.send(crate::event::AppEvent::Error(format!("forget: {e}"))); }
+                        Ok(true) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(format!("forgot #{id}")));
+                        }
+                        Ok(false) => {
+                            let _ =
+                                tx.send(crate::event::AppEvent::Error(format!("no memory #{id}")));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(crate::event::AppEvent::Error(format!("forget: {e}")));
+                        }
                     }
                 });
             }
@@ -641,29 +679,40 @@ impl App {
                     for s in scopes {
                         match svc.list(s, 50).await {
                             Ok(ms) => {
-                                let label = match s { Scope::Global => "global", Scope::Project => "project" };
+                                let label = match s {
+                                    Scope::Global => "global",
+                                    Scope::Project => "project",
+                                };
                                 let header = format!("── {label} ({}) ──", ms.len());
                                 let _ = tx.send(crate::event::AppEvent::Error(header));
                                 for m in ms {
-                                    let _ = tx.send(crate::event::AppEvent::Error(
-                                        format!("#{} [{}] {}", m.id, m.kind.as_str(), m.content)
-                                    ));
+                                    let _ = tx.send(crate::event::AppEvent::Error(format!(
+                                        "#{} [{}] {}",
+                                        m.id,
+                                        m.kind.as_str(),
+                                        m.content
+                                    )));
                                 }
                             }
-                            Err(e) => { let _ = tx.send(crate::event::AppEvent::Error(format!("list: {e}"))); }
+                            Err(e) => {
+                                let _ =
+                                    tx.send(crate::event::AppEvent::Error(format!("list: {e}")));
+                            }
                         }
                     }
                 });
             }
             Command::Reindex | Command::Accept => {
                 self.messages.push(crate::app::ChatEntry::System(
-                    "reindex/accept not implemented yet".into()));
+                    "reindex/accept not implemented yet".into(),
+                ));
             }
             Command::Disable => {
                 self.memory = None;
                 self.memory_disabled_reason = Some("user /memory disable".into());
                 self.messages.push(crate::app::ChatEntry::System(
-                    "memory disabled for this session".into()));
+                    "memory disabled for this session".into(),
+                ));
             }
         }
     }
@@ -680,7 +729,8 @@ impl App {
         if !self.streaming_buffer.is_empty() {
             self.finalize_response();
         }
-        self.messages.push(ChatEntry::System("Generation stopped.".into()));
+        self.messages
+            .push(ChatEntry::System("Generation stopped.".into()));
     }
 
     pub fn todo_tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -689,7 +739,9 @@ impl App {
                 tool_type: "function".into(),
                 function: FunctionDefinition {
                     name: "todo".into(),
-                    description: "Create a todo list for tracking task progress. Replaces any existing list.".into(),
+                    description:
+                        "Create a todo list for tracking task progress. Replaces any existing list."
+                            .into(),
                     parameters: serde_json::json!({
                         "type": "object",
                         "properties": {
@@ -902,21 +954,19 @@ impl App {
                     if let Some(think_end) = remaining.find("</think>") {
                         let thinking = &remaining[..think_end];
                         if !thinking.trim().is_empty() {
-                            self.messages
-                                .push(ChatEntry::Thinking {
-                                    content: thinking.trim().to_string(),
-                                    collapsed: false,
-                                });
+                            self.messages.push(ChatEntry::Thinking {
+                                content: thinking.trim().to_string(),
+                                collapsed: false,
+                            });
                         }
                         remaining = &remaining[think_end + "</think>".len()..];
                     } else {
                         // Unclosed think tag — treat rest as thinking
                         if !remaining.trim().is_empty() {
-                            self.messages
-                                .push(ChatEntry::Thinking {
-                                    content: remaining.trim().to_string(),
-                                    collapsed: false,
-                                });
+                            self.messages.push(ChatEntry::Thinking {
+                                content: remaining.trim().to_string(),
+                                collapsed: false,
+                            });
                         }
                         remaining = "";
                     }
@@ -1066,10 +1116,8 @@ impl App {
                 return;
             }
             "bg_status" => {
-                let args: crate::tools::background::BgStatusArgs =
-                    serde_json::from_str(&arguments).unwrap_or(
-                        crate::tools::background::BgStatusArgs { label: None }
-                    );
+                let args: crate::tools::background::BgStatusArgs = serde_json::from_str(&arguments)
+                    .unwrap_or(crate::tools::background::BgStatusArgs { label: None });
                 let result = if let Some(label) = args.label {
                     match self.bg_tasks.status_one(&label) {
                         Ok(status) => status,
@@ -1092,7 +1140,10 @@ impl App {
                 return;
             }
             "bg_cancel" => {
-                let (result, success) = match serde_json::from_str::<crate::tools::background::BgCancelArgs>(&arguments) {
+                let (result, success) = match serde_json::from_str::<
+                    crate::tools::background::BgCancelArgs,
+                >(&arguments)
+                {
                     Ok(args) => match self.bg_tasks.cancel(&args.label) {
                         Ok(()) => (format!("Task '{}' cancelled.", args.label), true),
                         Err(e) => (e, false),
@@ -1137,7 +1188,10 @@ impl App {
                 {
                     let _ = tx.send(AppEvent::ToolResult {
                         tool_call_id: call_id,
-                        result: format!("Permission denied for {}: {}", inner_tool, inner_permission_key),
+                        result: format!(
+                            "Permission denied for {}: {}",
+                            inner_tool, inner_permission_key
+                        ),
                         success: false,
                     });
                     return;
@@ -1169,13 +1223,22 @@ impl App {
                 }
 
                 // Spawn background execution
-                self.spawn_background_tool(label.clone(), inner_tool.clone(), inner_args_str.clone(), tx.clone(), abort_rx);
+                self.spawn_background_tool(
+                    label.clone(),
+                    inner_tool.clone(),
+                    inner_args_str.clone(),
+                    tx.clone(),
+                    abort_rx,
+                );
 
                 let display = crate::tools::shell::extract_command(&inner_args_str)
                     .unwrap_or_else(|| inner_args_str.clone());
                 let _ = tx.send(AppEvent::ToolResult {
                     tool_call_id: call_id,
-                    result: format!("Background task '{}' started ({}: {})", label, inner_tool, display),
+                    result: format!(
+                        "Background task '{}' started ({}: {})",
+                        label, inner_tool, display
+                    ),
                     success: true,
                 });
                 return;
@@ -1185,9 +1248,18 @@ impl App {
                     Ok(args) => {
                         self.subagent_call_id = Some(call_id);
                         self.subagents_pending = args.agents.len();
-                        self.subagent_states = args.agents.iter().enumerate().map(|(i, spec)| {
-                            crate::subagent::SubagentState::new(i, spec.system.as_deref(), &spec.prompt)
-                        }).collect();
+                        self.subagent_states = args
+                            .agents
+                            .iter()
+                            .enumerate()
+                            .map(|(i, spec)| {
+                                crate::subagent::SubagentState::new(
+                                    i,
+                                    spec.system.as_deref(),
+                                    &spec.prompt,
+                                )
+                            })
+                            .collect();
 
                         let mut tool_defs = self.tool_registry.definitions();
                         tool_defs.extend(self.mcp_tool_defs.clone());
@@ -1200,7 +1272,11 @@ impl App {
                                 model: self.active_model.clone(),
                                 messages: state.conversation.clone(),
                                 stream: true,
-                                tools: if tool_defs.is_empty() { None } else { Some(tool_defs.clone()) },
+                                tools: if tool_defs.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_defs.clone())
+                                },
                                 think: true,
                             };
                             let tx = self.event_tx.clone();
@@ -1211,7 +1287,8 @@ impl App {
                                 let tx2 = tx.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = client.chat_stream(request, stream_tx).await {
-                                        let _ = tx2.send(AppEvent::Error(format!("[agent-{index}] {e}")));
+                                        let _ = tx2
+                                            .send(AppEvent::Error(format!("[agent-{index}] {e}")));
                                     }
                                 });
                                 while let Some(event) = stream_rx.recv().await {
@@ -1364,10 +1441,8 @@ impl App {
                     // in the channel ahead of the result event.
                     let tx_done = tx.clone();
                     tokio::spawn(async move {
-                        let timeout = tokio::time::timeout(
-                            std::time::Duration::from_secs(120),
-                            child.wait(),
-                        );
+                        let timeout =
+                            tokio::time::timeout(std::time::Duration::from_secs(120), child.wait());
                         let (success, code, timed_out) = match timeout.await {
                             Ok(Ok(s)) => (s.success(), s.code(), false),
                             Ok(Err(_)) => (false, None, false),
@@ -1478,7 +1553,9 @@ impl App {
                                 let mut reader = tokio::io::BufReader::new(stdout);
                                 let mut line = String::new();
                                 while let Ok(n) = reader.read_line(&mut line).await {
-                                    if n == 0 { break; }
+                                    if n == 0 {
+                                        break;
+                                    }
                                     let _ = tx_out.send(AppEvent::BackgroundTaskOutput {
                                         label: label_out.clone(),
                                         chunk: line.clone(),
@@ -1494,7 +1571,9 @@ impl App {
                                 let mut reader = tokio::io::BufReader::new(stderr);
                                 let mut line = String::new();
                                 while let Ok(n) = reader.read_line(&mut line).await {
-                                    if n == 0 { break; }
+                                    if n == 0 {
+                                        break;
+                                    }
                                     let _ = tx_err.send(AppEvent::BackgroundTaskOutput {
                                         label: label_err.clone(),
                                         chunk: format!("stderr: {}", line),
@@ -1563,40 +1642,36 @@ impl App {
                     }
                 }
             }
-            "subagent" => {
-                match crate::subagent::parse_args(&arguments) {
-                    Ok(args) => {
-                        let mut all_tool_defs = self.tool_registry.definitions();
-                        all_tool_defs.extend(self.mcp_tool_defs.clone());
+            "subagent" => match crate::subagent::parse_args(&arguments) {
+                Ok(args) => {
+                    let mut all_tool_defs = self.tool_registry.definitions();
+                    all_tool_defs.extend(self.mcp_tool_defs.clone());
 
-                        let server = self.api_client.server().clone();
-                        let model = self.active_model.clone();
-                        let mcp_servers = self.mcp_servers.clone();
-                        let mcp_tool_map = self.mcp_tool_map.clone();
+                    let server = self.api_client.server().clone();
+                    let model = self.active_model.clone();
+                    let mcp_servers = self.mcp_servers.clone();
+                    let mcp_tool_map = self.mcp_tool_map.clone();
 
-                        tokio::spawn(
-                            crate::tools::background_subagent::run_background_subagents(
-                                args.agents,
-                                server,
-                                model,
-                                all_tool_defs,
-                                mcp_servers,
-                                mcp_tool_map,
-                                tx,
-                                label,
-                                abort_rx,
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::BackgroundTaskDone {
-                            label,
-                            result: e,
-                            success: false,
-                        });
-                    }
+                    tokio::spawn(crate::tools::background_subagent::run_background_subagents(
+                        args.agents,
+                        server,
+                        model,
+                        all_tool_defs,
+                        mcp_servers,
+                        mcp_tool_map,
+                        tx,
+                        label,
+                        abort_rx,
+                    ));
                 }
-            }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BackgroundTaskDone {
+                        label,
+                        result: e,
+                        success: false,
+                    });
+                }
+            },
             name if name.starts_with("mcp_") => {
                 if let Some((server_name, real_tool_name)) = self.mcp_tool_map.get(name) {
                     if let Some(server) = self.mcp_servers.get(server_name) {
@@ -1724,11 +1799,18 @@ impl App {
         if self.pending_tool_calls.is_empty() {
             let completed = self.bg_tasks.drain_completed();
             for result in completed {
-                let status = if result.success { "completed" } else { "failed" };
+                let status = if result.success {
+                    "completed"
+                } else {
+                    "failed"
+                };
                 let content = format!(
                     "[Background task '{}' ({}) {} after {:.1}s]\n{}",
-                    result.label, result.tool_name, status,
-                    result.elapsed.as_secs_f64(), result.result
+                    result.label,
+                    result.tool_name,
+                    status,
+                    result.elapsed.as_secs_f64(),
+                    result.result
                 );
                 self.conversation.push(Message {
                     role: "system".into(),
@@ -1749,21 +1831,32 @@ impl App {
         match event {
             StreamEvent::Token(text) => {
                 self.subagent_states[index].streaming_buffer.push_str(&text);
-                self.messages.push(ChatEntry::SubagentOutput { index, text });
+                self.messages
+                    .push(ChatEntry::SubagentOutput { index, text });
             }
             StreamEvent::ToolCallDelta(delta) => {
                 let state = &mut self.subagent_states[index];
-                let entry = state.assembling_tool_calls
+                let entry = state
+                    .assembling_tool_calls
                     .entry(delta.index)
                     .or_insert_with(|| ToolCall {
                         id: String::new(),
                         call_type: "function".into(),
-                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                        function: FunctionCall {
+                            name: String::new(),
+                            arguments: String::new(),
+                        },
                     });
-                if let Some(id) = delta.id { entry.id = id; }
+                if let Some(id) = delta.id {
+                    entry.id = id;
+                }
                 if let Some(ref fc) = delta.function {
-                    if let Some(ref name) = fc.name { entry.function.name.push_str(name); }
-                    if let Some(ref args) = fc.arguments { entry.function.arguments.push_str(args); }
+                    if let Some(ref name) = fc.name {
+                        entry.function.name.push_str(name);
+                    }
+                    if let Some(ref args) = fc.arguments {
+                        entry.function.arguments.push_str(args);
+                    }
                 }
             }
             StreamEvent::Usage(_) => {}
@@ -1806,7 +1899,9 @@ impl App {
     }
 
     fn check_all_subagents_done(&mut self) {
-        if self.subagents_pending > 0 { return; }
+        if self.subagents_pending > 0 {
+            return;
+        }
         let mut combined = String::new();
         for state in &self.subagent_states {
             combined.push_str(&format!("[agent-{} result]\n", state.index));
@@ -1945,13 +2040,19 @@ impl App {
                         let stdout = String::from_utf8_lossy(&out.stdout);
                         let stderr = String::from_utf8_lossy(&out.stderr);
                         let mut r = String::new();
-                        if !stdout.is_empty() { r.push_str(&stdout); }
+                        if !stdout.is_empty() {
+                            r.push_str(&stdout);
+                        }
                         if !stderr.is_empty() {
-                            if !r.is_empty() { r.push('\n'); }
+                            if !r.is_empty() {
+                                r.push('\n');
+                            }
                             r.push_str("stderr: ");
                             r.push_str(&stderr);
                         }
-                        if r.is_empty() { r.push_str("(no output)"); }
+                        if r.is_empty() {
+                            r.push_str("(no output)");
+                        }
                         r
                     }
                     Err(e) => e.to_string(),
@@ -2012,9 +2113,16 @@ impl App {
         } else {
             format!("Error: {result}")
         };
-        self.messages.push(ChatEntry::SubagentOutput { index, text: display });
+        self.messages.push(ChatEntry::SubagentOutput {
+            index,
+            text: display,
+        });
 
-        let content = if success { result } else { format!("Error: {result}") };
+        let content = if success {
+            result
+        } else {
+            format!("Error: {result}")
+        };
         let state = &mut self.subagent_states[index];
         state.conversation.push(Message {
             role: "tool".into(),
@@ -2038,7 +2146,11 @@ impl App {
             model: self.active_model.clone(),
             messages: state.conversation.clone(),
             stream: true,
-            tools: if tool_defs.is_empty() { None } else { Some(tool_defs) },
+            tools: if tool_defs.is_empty() {
+                None
+            } else {
+                Some(tool_defs)
+            },
             think: true,
         };
 
@@ -2638,7 +2750,9 @@ mod app_tests {
         app.streaming_buffer = "<think>Still thinking...".into();
         app.finalize_response();
 
-        assert!(matches!(&app.messages[0], ChatEntry::Thinking { content, .. } if content == "Still thinking..."));
+        assert!(
+            matches!(&app.messages[0], ChatEntry::Thinking { content, .. } if content == "Still thinking...")
+        );
     }
 
     #[test]
@@ -2676,7 +2790,9 @@ mod app_tests {
         let mut found_assistant = false;
         for entry in &app.messages {
             match entry {
-                ChatEntry::Thinking { content, .. } if content == "reasoning" => found_thinking = true,
+                ChatEntry::Thinking { content, .. } if content == "reasoning" => {
+                    found_thinking = true
+                }
                 ChatEntry::Assistant(s) if s.contains("Prefix") && s.contains("Suffix") => {
                     found_assistant = true
                 }
@@ -3176,7 +3292,11 @@ mod app_tests {
     fn handle_todo_complete_invalid_json() {
         let mut app = test_app();
         let result = app.handle_todo_complete(r#"{"index": "not a number"}"#);
-        assert!(result.unwrap_err().contains("Invalid todo_complete arguments"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Invalid todo_complete arguments")
+        );
     }
 
     #[test]
@@ -3198,7 +3318,8 @@ mod app_tests {
     #[test]
     fn handle_subagent_token_appends_to_buffer() {
         let mut app = test_app();
-        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagent_states
+            .push(crate::subagent::SubagentState::new(0, None, "test"));
         app.subagents_pending = 1;
         app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
         assert_eq!(app.subagent_states[0].streaming_buffer, "hello");
@@ -3207,7 +3328,8 @@ mod app_tests {
     #[test]
     fn handle_subagent_token_adds_chat_entry() {
         let mut app = test_app();
-        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagent_states
+            .push(crate::subagent::SubagentState::new(0, None, "test"));
         app.subagents_pending = 1;
         app.handle_subagent_stream(0, StreamEvent::Token("hello".into()));
         assert!(matches!(
@@ -3242,7 +3364,8 @@ mod app_tests {
     #[test]
     fn subagent_done_without_tools_marks_complete() {
         let mut app = test_app();
-        app.subagent_states.push(crate::subagent::SubagentState::new(0, None, "test"));
+        app.subagent_states
+            .push(crate::subagent::SubagentState::new(0, None, "test"));
         app.subagents_pending = 1;
         app.subagent_call_id = Some("call_1".into());
         app.subagent_states[0].streaming_buffer = "result text".into();

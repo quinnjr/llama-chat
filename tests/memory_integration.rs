@@ -13,11 +13,11 @@ fn round_trip_insert_and_select() {
         [],
     ).unwrap();
 
-    let content: String = guard.query_row(
-        "SELECT content FROM memories WHERE id = 1",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let content: String = guard
+        .query_row("SELECT content FROM memories WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert_eq!(content, "Prefers tabs over spaces");
 }
 
@@ -32,18 +32,22 @@ fn fts_finds_inserted_memory() {
         [],
     ).unwrap();
 
-    let hit: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'rust'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let hit: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'rust'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(hit, 1);
 
-    let hit2: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'macros'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let hit2: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'macros'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(hit2, 1);
 }
 
@@ -61,10 +65,12 @@ fn knn_finds_nearest_vector() {
     let id1 = guard.last_insert_rowid();
     let v1 = common::fake_embed("apple", 4);
     let j1 = serde_json::to_string(&v1).unwrap();
-    guard.execute(
-        "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
-        params![id1, j1],
-    ).unwrap();
+    guard
+        .execute(
+            "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
+            params![id1, j1],
+        )
+        .unwrap();
 
     guard.execute(
         "INSERT INTO memories(kind, content, source, created_at, updated_at, last_used_at, use_count)
@@ -74,10 +80,12 @@ fn knn_finds_nearest_vector() {
     let id2 = guard.last_insert_rowid();
     let v2 = common::fake_embed("banana", 4);
     let j2 = serde_json::to_string(&v2).unwrap();
-    guard.execute(
-        "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
-        params![id2, j2],
-    ).unwrap();
+    guard
+        .execute(
+            "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
+            params![id2, j2],
+        )
+        .unwrap();
 
     guard.execute(
         "INSERT INTO memories(kind, content, source, created_at, updated_at, last_used_at, use_count)
@@ -87,22 +95,26 @@ fn knn_finds_nearest_vector() {
     let id3 = guard.last_insert_rowid();
     let v3 = common::fake_embed("car", 4);
     let j3 = serde_json::to_string(&v3).unwrap();
-    guard.execute(
-        "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
-        params![id3, j3],
-    ).unwrap();
+    guard
+        .execute(
+            "INSERT INTO memories_vec(rowid, vector) VALUES (?, vector_from_json(?, 'float4'))",
+            params![id3, j3],
+        )
+        .unwrap();
 
     // Query with a vector similar to "apple"
     let q = common::fake_embed("apple", 4);
     let jq = serde_json::to_string(&q).unwrap();
 
-    let nearest: i64 = guard.query_row(
-        "SELECT rowid FROM memories_vec
+    let nearest: i64 = guard
+        .query_row(
+            "SELECT rowid FROM memories_vec
          WHERE knn_match(distance, vector_from_json(?, 'float4'))
          LIMIT 1",
-        params![jq],
-        |r| r.get(0),
-    ).unwrap();
+            params![jq],
+            |r| r.get(0),
+        )
+        .unwrap();
 
     // The nearest to "apple" should be id1 (itself)
     assert_eq!(nearest, id1);
@@ -121,19 +133,19 @@ fn null_embedding_row_is_still_fts_searchable() {
     ).unwrap();
 
     // FTS should still find it
-    let hit: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'embedding'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let hit: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'embedding'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(hit, 1);
 
     // Vector table should not have it
-    let vec_count: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM memories_vec",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let vec_count: i64 = guard
+        .query_row("SELECT COUNT(*) FROM memories_vec", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(vec_count, 0);
 }
 
@@ -143,43 +155,52 @@ fn cascade_delete_session_removes_chunks() {
     let guard = conn.lock().unwrap();
 
     // Create a session
-    guard.execute(
-        "INSERT INTO sessions(started_at, server, model) VALUES (1000, 'test', 'gpt-4')",
-        [],
-    ).unwrap();
+    guard
+        .execute(
+            "INSERT INTO sessions(started_at, server, model) VALUES (1000, 'test', 'gpt-4')",
+            [],
+        )
+        .unwrap();
     let session_id = guard.last_insert_rowid();
 
     // Add chunks
-    guard.execute(
-        "INSERT INTO chunks(session_id, seq, role, content, token_count, created_at)
+    guard
+        .execute(
+            "INSERT INTO chunks(session_id, seq, role, content, token_count, created_at)
          VALUES (?, 0, 'user', 'hello', 1, 1000)",
-        params![session_id],
-    ).unwrap();
-    guard.execute(
-        "INSERT INTO chunks(session_id, seq, role, content, token_count, created_at)
+            params![session_id],
+        )
+        .unwrap();
+    guard
+        .execute(
+            "INSERT INTO chunks(session_id, seq, role, content, token_count, created_at)
          VALUES (?, 1, 'assistant', 'hi', 1, 1001)",
-        params![session_id],
-    ).unwrap();
+            params![session_id],
+        )
+        .unwrap();
 
     // Verify chunks exist
-    let chunk_count: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
-        params![session_id],
-        |r| r.get(0),
-    ).unwrap();
+    let chunk_count: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(chunk_count, 2);
 
     // Delete session
-    guard.execute(
-        "DELETE FROM sessions WHERE id = ?",
-        params![session_id],
-    ).unwrap();
+    guard
+        .execute("DELETE FROM sessions WHERE id = ?", params![session_id])
+        .unwrap();
 
     // Chunks should be cascade-deleted
-    let chunk_count_after: i64 = guard.query_row(
-        "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
-        params![session_id],
-        |r| r.get(0),
-    ).unwrap();
+    let chunk_count_after: i64 = guard
+        .query_row(
+            "SELECT COUNT(*) FROM chunks WHERE session_id = ?",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(chunk_count_after, 0);
 }
