@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::app::{App, ChatEntry};
 use crate::config::theme::Theme;
@@ -134,10 +134,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 for (i, line) in text.lines().enumerate() {
                     if i == 0 {
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                prefix.clone(),
-                                Style::default().fg(theme.assistant_text),
-                            ),
+                            Span::styled(prefix.clone(), Style::default().fg(theme.assistant_text)),
                             Span::styled(line, Style::default().fg(theme.fg)),
                         ]));
                     } else {
@@ -313,7 +310,11 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         if app.show_thinking {
             for (content, closed) in &thinking_parts {
                 lines.push(Line::from(Span::styled(
-                    format!("{} {} \u{2500}", THINKING_HEADER, if *closed { COLLAPSE_ICON } else { "..." }),
+                    format!(
+                        "{} {} \u{2500}",
+                        THINKING_HEADER,
+                        if *closed { COLLAPSE_ICON } else { "..." }
+                    ),
                     Style::default()
                         .fg(theme.thinking_header)
                         .add_modifier(Modifier::BOLD),
@@ -365,7 +366,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         )
         .wrap(Wrap { trim: false });
 
-    let total_visual_lines = chat.line_count(area.width) as usize;
+    let total_visual_lines = chat.line_count(area.width);
     let scroll = if total_visual_lines > visible_height {
         (total_visual_lines - visible_height) as u16
     } else {

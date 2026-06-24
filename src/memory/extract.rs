@@ -41,9 +41,15 @@ pub fn parse_payload(raw: &str) -> Option<ExtractedPayload> {
     // Tolerate models that wrap JSON in ```json fences.
     let trimmed = raw.trim();
     let body = if let Some(stripped) = trimmed.strip_prefix("```json") {
-        stripped.trim_start_matches('\n').trim_end_matches("```").trim()
+        stripped
+            .trim_start_matches('\n')
+            .trim_end_matches("```")
+            .trim()
     } else if let Some(stripped) = trimmed.strip_prefix("```") {
-        stripped.trim_start_matches('\n').trim_end_matches("```").trim()
+        stripped
+            .trim_start_matches('\n')
+            .trim_end_matches("```")
+            .trim()
     } else {
         trimmed
     };
@@ -54,9 +60,8 @@ pub fn parse_payload(raw: &str) -> Option<ExtractedPayload> {
 pub fn load_transcript(store: &Store, session_id: i64) -> Result<String, MemoryError> {
     let conn = store.conn();
     let guard = conn.lock().expect("poisoned");
-    let mut stmt = guard.prepare(
-        "SELECT role, content FROM chunks WHERE session_id = ? ORDER BY seq"
-    )?;
+    let mut stmt =
+        guard.prepare("SELECT role, content FROM chunks WHERE session_id = ? ORDER BY seq")?;
     let rows: Vec<(String, String)> = stmt
         .query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
@@ -74,7 +79,9 @@ pub fn load_transcript(store: &Store, session_id: i64) -> Result<String, MemoryE
 /// kind counts as a duplicate. Returns Some(existing_id) if dup.
 #[allow(dead_code)]
 pub fn find_duplicate(
-    store: &Store, kind: Kind, candidate_vec: &[f32],
+    store: &Store,
+    kind: Kind,
+    candidate_vec: &[f32],
 ) -> Result<Option<i64>, MemoryError> {
     let conn = store.conn();
     let guard = conn.lock().expect("poisoned");
@@ -85,10 +92,12 @@ pub fn find_duplicate(
          JOIN memories m ON m.id = v.rowid
          WHERE m.kind = ?
            AND knn_match(v.distance, vector_from_json(?, 'float4'))
-         LIMIT 1"
+         LIMIT 1",
     )?;
     let hit: Option<(i64, f64)> = stmt
-        .query_row(params![kind.as_str(), qjson], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(params![kind.as_str(), qjson], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .ok();
     if let Some((id, distance)) = hit {
         // cosine distance in sqlite-vector-rs is 1 - similarity
@@ -102,7 +111,10 @@ pub fn find_duplicate(
 
 /// Insert or bump an extracted memory.
 pub fn upsert_extracted(
-    store: Arc<Store>, kind: Kind, content: String, emb: Option<Vec<f32>>,
+    store: Arc<Store>,
+    kind: Kind,
+    content: String,
+    emb: Option<Vec<f32>>,
 ) -> Result<(), MemoryError> {
     let conn = store.conn();
     let mut guard = conn.lock().expect("poisoned");
@@ -111,15 +123,23 @@ pub fn upsert_extracted(
     let dup_id = if let Some(ref v) = emb {
         // Use the same connection for the dup probe — borrow the lock we hold.
         let qjson = serde_json::to_string(v).unwrap();
-        let hit: Option<(i64, f64)> = guard.query_row(
-            "SELECT v.rowid, v.distance
+        let hit: Option<(i64, f64)> = guard
+            .query_row(
+                "SELECT v.rowid, v.distance
              FROM memories_vec v JOIN memories m ON m.id = v.rowid
              WHERE m.kind = ? AND knn_match(v.distance, vector_from_json(?, 'float4'))
              LIMIT 1",
-            params![kind.as_str(), qjson],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).ok();
-        hit.and_then(|(id, d)| if (1.0 - d as f32) >= DEDUP_THRESHOLD { Some(id) } else { None })
+                params![kind.as_str(), qjson],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        hit.and_then(|(id, d)| {
+            if (1.0 - d as f32) >= DEDUP_THRESHOLD {
+                Some(id)
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
@@ -135,7 +155,14 @@ pub fn upsert_extracted(
             "INSERT INTO memories(kind, content, source, created_at, updated_at,
                                    last_used_at, use_count)
              VALUES (?, ?, ?, ?, ?, ?, 0)",
-            params![kind.as_str(), content, Source::Extracted.as_str(), ts, ts, ts],
+            params![
+                kind.as_str(),
+                content,
+                Source::Extracted.as_str(),
+                ts,
+                ts,
+                ts
+            ],
         )?;
         let id = tx.last_insert_rowid();
         if let Some(v) = emb {
@@ -163,19 +190,30 @@ pub async fn run(
     let transcript = {
         let s = Arc::clone(&store);
         tokio::task::spawn_blocking(move || load_transcript(&s, session_id))
-            .await.map_err(|e| MemoryError::Http(format!("join: {e}")))??
+            .await
+            .map_err(|e| MemoryError::Http(format!("join: {e}")))??
     };
-    if transcript.trim().is_empty() { return Ok(None); }
+    if transcript.trim().is_empty() {
+        return Ok(None);
+    }
 
     let req = ChatRequest {
         model: model_name,
         messages: vec![
-            Message { role: "system".into(), content: Some(EXTRACTION_PROMPT.into()),
-                      tool_calls: None, tool_call_id: None },
-            Message { role: "user".into(), content: Some(transcript),
-                      tool_calls: None, tool_call_id: None },
+            Message {
+                role: "system".into(),
+                content: Some(EXTRACTION_PROMPT.into()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: "user".into(),
+                content: Some(transcript),
+                tool_calls: None,
+                tool_call_id: None,
+            },
         ],
-        stream: true,  // we buffer tokens below
+        stream: true, // we buffer tokens below
         tools: None,
         think: false,
     };
@@ -186,7 +224,9 @@ pub async fn run(
 
     let mut buf = String::new();
     while let Some(ev) = rx.recv().await {
-        if let crate::api::client::StreamEvent::Token(t) = ev { buf.push_str(&t); }
+        if let crate::api::client::StreamEvent::Token(t) = ev {
+            buf.push_str(&t);
+        }
     }
     task.await.ok();
 
@@ -198,18 +238,22 @@ pub async fn run(
     // Global-vs-project kind routing: user & feedback go global;
     // project & reference go project.
     for m in payload.memories {
-        let Some(kind) = Kind::parse(&m.kind) else { continue };
+        let Some(kind) = Kind::parse(&m.kind) else {
+            continue;
+        };
         let target = match kind {
             Kind::User | Kind::Feedback => Arc::clone(&global),
             Kind::Project | Kind::Reference => Arc::clone(&store),
         };
-        let emb = embed.embed(vec![m.content.clone()]).await?
+        let emb = embed
+            .embed(vec![m.content.clone()])
+            .await?
             .and_then(|mut v| v.pop());
         let content = m.content;
         let t = Arc::clone(&target);
-        let _ = tokio::task::spawn_blocking(move || {
-            upsert_extracted(t, kind, content, emb)
-        }).await.map_err(|e| MemoryError::Http(format!("join: {e}")))?;
+        let _ = tokio::task::spawn_blocking(move || upsert_extracted(t, kind, content, emb))
+            .await
+            .map_err(|e| MemoryError::Http(format!("join: {e}")))?;
     }
 
     Ok(payload.title)

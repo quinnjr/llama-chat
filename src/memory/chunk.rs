@@ -35,7 +35,9 @@ pub fn split(input: &str) -> Vec<ChunkSlice> {
             text: slice.join(" "),
             token_count: slice.len(),
         });
-        if end == tokens.len() { break; }
+        if end == tokens.len() {
+            break;
+        }
         start += step;
     }
     out

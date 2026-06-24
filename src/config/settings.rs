@@ -89,10 +89,18 @@ pub struct MemoryConfig {
     pub extraction_on_clear: bool,
 }
 
-fn default_embedding_server() -> String { "local".into() }
-fn default_top_n() -> usize { 8 }
-fn default_decay_half_life() -> u32 { 90 }
-fn default_extraction_on_clear() -> bool { true }
+fn default_embedding_server() -> String {
+    "local".into()
+}
+fn default_top_n() -> usize {
+    8
+}
+fn default_decay_half_life() -> u32 {
+    90
+}
+fn default_extraction_on_clear() -> bool {
+    true
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -113,7 +121,9 @@ pub struct BackgroundConfig {
     pub poll_interval: u64,
 }
 
-fn default_poll_interval() -> u64 { 30 }
+fn default_poll_interval() -> u64 {
+    30
+}
 
 impl Default for BackgroundConfig {
     fn default() -> Self {

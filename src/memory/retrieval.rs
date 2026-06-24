@@ -69,8 +69,9 @@ pub fn retrieve_from(
     items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     items.truncate(top_n);
 
-    Ok(items.into_iter().map(|(_, score, row)| {
-        match row {
+    Ok(items
+        .into_iter()
+        .map(|(_, score, row)| match row {
             ItemRow::Memory(m) => RetrievedItem {
                 scope: store.scope,
                 kind: Some(m.kind),
@@ -83,24 +84,40 @@ pub fn retrieve_from(
                 content: c.content,
                 score,
             },
-        }
-    }).collect())
+        })
+        .collect())
 }
 
-enum ItemRow { Memory(MemRow), Chunk(ChunkRow) }
-struct MemRow { kind: Kind, content: String, last_used_at: i64 }
-struct ChunkRow { content: String }
+enum ItemRow {
+    Memory(MemRow),
+    Chunk(ChunkRow),
+}
+struct MemRow {
+    kind: Kind,
+    content: String,
+    last_used_at: i64,
+}
+struct ChunkRow {
+    content: String,
+}
 
 fn load_memory(conn: &rusqlite::Connection, id: i64) -> Result<Option<MemRow>, MemoryError> {
     let row = conn.query_row(
         "SELECT kind, content, last_used_at FROM memories WHERE id = ?",
         params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
     );
     match row {
         Ok((k, content, last_used_at)) => Ok(Some(MemRow {
             kind: Kind::parse(&k).unwrap_or(Kind::Project),
-            content, last_used_at,
+            content,
+            last_used_at,
         })),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
@@ -110,7 +127,8 @@ fn load_memory(conn: &rusqlite::Connection, id: i64) -> Result<Option<MemRow>, M
 fn load_chunk(conn: &rusqlite::Connection, id: i64) -> Result<Option<ChunkRow>, MemoryError> {
     let row = conn.query_row(
         "SELECT content FROM chunks WHERE id = ?",
-        params![id], |r| r.get::<_, String>(0),
+        params![id],
+        |r| r.get::<_, String>(0),
     );
     match row {
         Ok(content) => Ok(Some(ChunkRow { content })),
@@ -120,69 +138,78 @@ fn load_chunk(conn: &rusqlite::Connection, id: i64) -> Result<Option<ChunkRow>, 
 }
 
 /// Raw BM25 FTS5 query for memories. Returns map id → rank (0-based).
-fn run_fts_memories(conn: &rusqlite::Connection, query: &str)
-    -> Result<HashMap<i64, usize>, MemoryError>
-{
-    if query.trim().is_empty() { return Ok(HashMap::new()); }
+fn run_fts_memories(
+    conn: &rusqlite::Connection,
+    query: &str,
+) -> Result<HashMap<i64, usize>, MemoryError> {
+    if query.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
     let match_q = fts_safe(query);
     let mut stmt = conn.prepare(
         "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?
-         ORDER BY bm25(memories_fts) LIMIT ?"
+         ORDER BY bm25(memories_fts) LIMIT ?",
     )?;
-    let ids: Vec<i64> = stmt.query_map(params![match_q, FTS_LIMIT as i64],
-        |r| r.get(0))?
+    let ids: Vec<i64> = stmt
+        .query_map(params![match_q, FTS_LIMIT as i64], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     Ok(ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect())
 }
 
-fn run_fts_chunks(conn: &rusqlite::Connection, query: &str)
-    -> Result<HashMap<i64, usize>, MemoryError>
-{
-    if query.trim().is_empty() { return Ok(HashMap::new()); }
+fn run_fts_chunks(
+    conn: &rusqlite::Connection,
+    query: &str,
+) -> Result<HashMap<i64, usize>, MemoryError> {
+    if query.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
     let match_q = fts_safe(query);
     let mut stmt = conn.prepare(
         "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?
-         ORDER BY bm25(chunks_fts) LIMIT ?"
+         ORDER BY bm25(chunks_fts) LIMIT ?",
     )?;
-    let ids: Vec<i64> = stmt.query_map(params![match_q, FTS_LIMIT as i64],
-        |r| r.get(0))?
+    let ids: Vec<i64> = stmt
+        .query_map(params![match_q, FTS_LIMIT as i64], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     Ok(ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect())
 }
 
-fn run_vec_memories(conn: &rusqlite::Connection, v: &[f32])
-    -> Result<HashMap<i64, usize>, MemoryError>
-{
+fn run_vec_memories(
+    conn: &rusqlite::Connection,
+    v: &[f32],
+) -> Result<HashMap<i64, usize>, MemoryError> {
     let json = serde_json::to_string(v).unwrap();
     let mut stmt = conn.prepare(
         "SELECT rowid FROM memories_vec
          WHERE knn_match(distance, vector_from_json(?, 'float4'))
-         LIMIT ?"
+         LIMIT ?",
     )?;
-    let ids: Vec<i64> = stmt.query_map(params![json, VEC_LIMIT as i64],
-        |r| r.get(0))?
+    let ids: Vec<i64> = stmt
+        .query_map(params![json, VEC_LIMIT as i64], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     Ok(ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect())
 }
 
-fn run_vec_chunks(conn: &rusqlite::Connection, v: &[f32])
-    -> Result<HashMap<i64, usize>, MemoryError>
-{
+fn run_vec_chunks(
+    conn: &rusqlite::Connection,
+    v: &[f32],
+) -> Result<HashMap<i64, usize>, MemoryError> {
     let json = serde_json::to_string(v).unwrap();
     let mut stmt = conn.prepare(
         "SELECT rowid FROM chunks_vec
          WHERE knn_match(distance, vector_from_json(?, 'float4'))
-         LIMIT ?"
+         LIMIT ?",
     )?;
-    let ids: Vec<i64> = stmt.query_map(params![json, VEC_LIMIT as i64],
-        |r| r.get(0))?
+    let ids: Vec<i64> = stmt
+        .query_map(params![json, VEC_LIMIT as i64], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     Ok(ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect())
 }
 
 /// Escape FTS5 special characters by wrapping each term in double quotes.
 fn fts_safe(query: &str) -> String {
-    query.split_whitespace()
+    query
+        .split_whitespace()
         .map(|t| t.replace('"', ""))
         .filter(|t| !t.is_empty())
         .map(|t| format!("\"{t}\""))
@@ -208,9 +235,11 @@ mod tests {
     #[test]
     fn rrf_prefers_better_ranks() {
         let mut a = HashMap::new();
-        a.insert(1, 0); a.insert(2, 1);
+        a.insert(1, 0);
+        a.insert(2, 1);
         let mut b = HashMap::new();
-        b.insert(2, 0); b.insert(1, 1);
+        b.insert(2, 0);
+        b.insert(1, 1);
         let fused = rrf_fuse(&[&a, &b]);
         assert!(fused[&1] > 0.0 && fused[&2] > 0.0);
         // Item that ranked 0 in both would beat one that ranked 0 in only one.
@@ -229,7 +258,7 @@ mod tests {
         a.insert(10, 5);
         let before = rrf_fuse(&[&a])[&10];
         let mut a2 = a.clone();
-        a2.insert(99, 0);  // new higher-ranked item
+        a2.insert(99, 0); // new higher-ranked item
         let after = rrf_fuse(&[&a2])[&10];
         assert_eq!(before, after);
     }

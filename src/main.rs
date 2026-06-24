@@ -151,9 +151,7 @@ async fn main() -> Result<()> {
     let poll_tx = event_tx.clone();
     let poll_interval = app.config.background.poll_interval;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(poll_interval),
-        );
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_interval));
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;
@@ -357,8 +355,11 @@ async fn main() -> Result<()> {
                             let status = if r.success { "completed" } else { "failed" };
                             let content = format!(
                                 "[Background task '{}' ({}) {} after {:.1}s]\n{}",
-                                r.label, r.tool_name, status,
-                                r.elapsed.as_secs_f64(), r.result
+                                r.label,
+                                r.tool_name,
+                                status,
+                                r.elapsed.as_secs_f64(),
+                                r.result
                             );
                             app.conversation.push(crate::api::types::Message {
                                 role: "system".into(),
@@ -381,10 +382,7 @@ async fn main() -> Result<()> {
                         && app.pending_tool_calls.is_empty()
                     {
                         let summary = app.bg_tasks.running_summary();
-                        let content = format!(
-                            "[Background tasks still running:]\n{}",
-                            summary
-                        );
+                        let content = format!("[Background tasks still running:]\n{}", summary);
                         app.conversation.push(crate::api::types::Message {
                             role: "system".into(),
                             content: Some(content.clone()),

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::api::client::{ApiClient, StreamEvent};
 use crate::api::types::*;
@@ -21,6 +21,7 @@ use crate::tools::shell::ShellTool;
 /// `BackgroundTaskOutput`; the combined result is sent as
 /// `BackgroundTaskDone` when all agents finish.
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_background_subagents(
     agents: Vec<AgentSpec>,
     server: ServerConfig,
@@ -48,7 +49,18 @@ pub async fn run_background_subagents(
             let label = label.clone();
 
             handles.push(tokio::spawn(async move {
-                run_single_agent(i, agent, server, model, tool_defs, mcp_servers, mcp_tool_map, tx, label).await
+                run_single_agent(
+                    i,
+                    agent,
+                    server,
+                    model,
+                    tool_defs,
+                    mcp_servers,
+                    mcp_tool_map,
+                    tx,
+                    label,
+                )
+                .await
             }));
         }
 
@@ -94,6 +106,7 @@ pub async fn run_background_subagents(
 /// Run a single agent through the stream-tool-loop cycle until it produces
 /// a final text response with no tool calls.
 #[cfg(not(tarpaulin_include))]
+#[allow(clippy::too_many_arguments)]
 async fn run_single_agent(
     index: usize,
     agent: AgentSpec,
@@ -157,16 +170,17 @@ async fn run_single_agent(
                     });
                 }
                 StreamEvent::ToolCallDelta(delta) => {
-                    let entry = assembling_tool_calls
-                        .entry(delta.index)
-                        .or_insert_with(|| ToolCall {
-                            id: String::new(),
-                            call_type: "function".into(),
-                            function: FunctionCall {
-                                name: String::new(),
-                                arguments: String::new(),
-                            },
-                        });
+                    let entry =
+                        assembling_tool_calls
+                            .entry(delta.index)
+                            .or_insert_with(|| ToolCall {
+                                id: String::new(),
+                                call_type: "function".into(),
+                                function: FunctionCall {
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                },
+                            });
                     if let Some(id) = delta.id {
                         entry.id = id;
                     }
@@ -221,7 +235,11 @@ async fn run_single_agent(
             // Send progress summary
             let _ = tx.send(AppEvent::BackgroundTaskOutput {
                 label: label.clone(),
-                chunk: format!("\u{2699} {}: {}\n", tool_name, truncate_args(arguments, 120)),
+                chunk: format!(
+                    "\u{2699} {}: {}\n",
+                    tool_name,
+                    truncate_args(arguments, 120)
+                ),
             });
 
             let (output, _success) =
@@ -289,18 +307,17 @@ async fn execute_tool_directly(
                 (format!("Unknown MCP tool: {}", name), false)
             }
         }
-        "todo" | "todo_complete" | "wipe_todo" => {
-            ("(todo tools not available in background subagents)".into(), false)
-        }
-        "subagent" | "bg_run" | "bg_status" | "bg_cancel" => {
-            (
-                format!(
-                    "Tool '{}' cannot be used inside background subagents",
-                    tool_name
-                ),
-                false,
-            )
-        }
+        "todo" | "todo_complete" | "wipe_todo" => (
+            "(todo tools not available in background subagents)".into(),
+            false,
+        ),
+        "subagent" | "bg_run" | "bg_status" | "bg_cancel" => (
+            format!(
+                "Tool '{}' cannot be used inside background subagents",
+                tool_name
+            ),
+            false,
+        ),
         _ => (format!("Unknown tool: {}", tool_name), false),
     }
 }

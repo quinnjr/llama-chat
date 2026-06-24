@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 use crate::config::theme::Theme;
@@ -44,10 +44,7 @@ pub fn draw(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     ];
 
     if !mem_label.is_empty() {
-        line1_spans.push(Span::styled(
-            mem_label,
-            Style::default().fg(theme.tool_ok),
-        ));
+        line1_spans.push(Span::styled(mem_label, Style::default().fg(theme.tool_ok)));
     }
 
     if bg_count > 0 {

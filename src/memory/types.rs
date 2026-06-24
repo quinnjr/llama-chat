@@ -83,7 +83,7 @@ pub struct Chunk {
 #[derive(Debug, Clone)]
 pub struct RetrievedItem {
     pub scope: Scope,
-    pub kind: Option<Kind>,  // None for chunks
+    pub kind: Option<Kind>, // None for chunks
     pub content: String,
     pub score: f64,
 }
@@ -116,13 +116,19 @@ impl fmt::Display for MemoryError {
 impl std::error::Error for MemoryError {}
 
 impl From<std::io::Error> for MemoryError {
-    fn from(e: std::io::Error) -> Self { MemoryError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        MemoryError::Io(e)
+    }
 }
 impl From<rusqlite::Error> for MemoryError {
-    fn from(e: rusqlite::Error) -> Self { MemoryError::Sqlite(e) }
+    fn from(e: rusqlite::Error) -> Self {
+        MemoryError::Sqlite(e)
+    }
 }
 impl From<serde_json::Error> for MemoryError {
-    fn from(e: serde_json::Error) -> Self { MemoryError::Json(e) }
+    fn from(e: serde_json::Error) -> Self {
+        MemoryError::Json(e)
+    }
 }
 
 #[derive(Debug, Clone)]
